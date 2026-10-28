@@ -41,7 +41,8 @@ const AUDIO_STORAGE_KEY = 'atelier_ambre_audio_v1';
 const FOCUS_STORAGE_KEY = 'atelier_ambre_focus_v1';
 
 const DEFAULT_AUDIO_PREFS: AudioPreferences = {
-  isPlaying: false,
+  isPlaying: true,
+  autoPlay: true,
   isMuted: false,
   quietMode: false,
   masterVolume: 0.75,
@@ -134,7 +135,13 @@ export function App() {
       const saved = localStorage.getItem(AUDIO_STORAGE_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
-        return { ...DEFAULT_AUDIO_PREFS, ...parsed, isPlaying: false };
+        const autoPlay = parsed.autoPlay ?? true;
+        return {
+          ...DEFAULT_AUDIO_PREFS,
+          ...parsed,
+          autoPlay,
+          isPlaying: autoPlay ? true : Boolean(parsed.isPlaying),
+        };
       }
     } catch {
       // ignore storage errors
@@ -176,6 +183,22 @@ export function App() {
       // ignore
     }
   }, [audioPrefs]);
+
+  // Auto-play audio on mount and unlock Web Audio context on first user gesture if suspended by browser policy
+  useEffect(() => {
+    if (audioPrefs.autoPlay && audioPrefs.isPlaying) {
+      soundEngine.initAndApply(audioPrefs);
+    }
+    const handleGestureUnlock = () => {
+      soundEngine.unlockIfNeeded();
+    };
+    window.addEventListener('pointerdown', handleGestureUnlock, { passive: true });
+    window.addEventListener('keydown', handleGestureUnlock, { passive: true });
+    return () => {
+      window.removeEventListener('pointerdown', handleGestureUnlock);
+      window.removeEventListener('keydown', handleGestureUnlock);
+    };
+  }, []);
 
   // Sync Focus Preferences to LocalStorage
   useEffect(() => {
@@ -236,8 +259,7 @@ export function App() {
   const handleEnterCafe = () => {
     soundEngine.playDoorBell();
 
-    // Respect browser autoplay: start warm café soundscape on entrance click if not in quiet mode
-    if (!audioPrefs.isPlaying && !audioPrefs.quietMode) {
+    if (audioPrefs.autoPlay && !audioPrefs.isPlaying && !audioPrefs.quietMode) {
       const nextAudio: AudioPreferences = {
         ...audioPrefs,
         isPlaying: true,
@@ -268,8 +290,12 @@ export function App() {
     setHoveredSeatId(null);
     setScene('seated');
 
-    // Auto-start gentle audio if user hasn't started it yet and isn't in quiet mode
-    if (!audioPrefs.isPlaying && !audioPrefs.quietMode && !audioPrefs.isMuted) {
+    if (
+      audioPrefs.autoPlay &&
+      !audioPrefs.isPlaying &&
+      !audioPrefs.quietMode &&
+      !audioPrefs.isMuted
+    ) {
       const nextAudio: AudioPreferences = {
         ...audioPrefs,
         isPlaying: true,

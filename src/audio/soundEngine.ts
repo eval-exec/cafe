@@ -17,7 +17,8 @@ class CafeSoundEngine {
 
   private isInitialized = false;
   private prefs: AudioPreferences = {
-    isPlaying: false,
+    isPlaying: true,
+    autoPlay: true,
     isMuted: false,
     quietMode: false,
     masterVolume: 0.75,
@@ -52,6 +53,17 @@ class CafeSoundEngine {
       this.ctx.resume().catch(() => {});
     }
     return this.ctx;
+  }
+
+  public unlockIfNeeded(): void {
+    if (!this.prefs.isPlaying || this.prefs.isMuted || this.prefs.quietMode) return;
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    if (!this.isInitialized) {
+      this.setupGraph(ctx);
+      this.isInitialized = true;
+    }
+    this.updateVolumes();
   }
 
   public initAndApply(prefs: AudioPreferences): void {

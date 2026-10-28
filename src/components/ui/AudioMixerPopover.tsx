@@ -136,13 +136,32 @@ export const AudioMixerPopover: React.FC<AudioMixerPopoverProps> = ({
             </p>
           </div>
         </div>
-        <button
-          onClick={onClose}
-          className="p-1.5 rounded-lg text-[#C8B6A6] hover:text-[#F4ECE1] hover:bg-white/5 transition-colors"
-          aria-label="Close sound mixer"
-        >
-          <X className="w-4 h-4" />
-        </button>
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={() =>
+              onChange({
+                ...prefs,
+                autoPlay: !prefs.autoPlay,
+                isPlaying: !prefs.autoPlay ? true : prefs.isPlaying,
+              })
+            }
+            className={`px-2 py-1 rounded-lg text-[10px] font-semibold border transition-colors ${
+              prefs.autoPlay
+                ? 'bg-[#68D391]/20 border-[#68D391]/50 text-[#9AE6B4]'
+                : 'bg-white/5 border-white/10 text-[#A89686]'
+            }`}
+            title="Toggle automatic music playback on visit"
+          >
+            Auto-Play: {prefs.autoPlay ? 'ON' : 'OFF'}
+          </button>
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded-lg text-[#C8B6A6] hover:text-[#F4ECE1] hover:bg-white/5 transition-colors"
+            aria-label="Close sound mixer"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
       </div>
 
       {/* Master Playback & Volume Row */}

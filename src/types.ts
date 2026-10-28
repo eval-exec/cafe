@@ -39,13 +39,14 @@ export type AmbientLayerId = 'cafe' | 'rain' | 'fire';
 
 export interface AudioPreferences {
   isPlaying: boolean;
+  autoPlay: boolean;
   isMuted: boolean;
   quietMode: boolean;
   masterVolume: number;
   musicStyle: MusicStyle;
   musicVolume: number;
   ambientVolumes: Record<AmbientLayerId, number>;
-   ambientEnabled: Record<AmbientLayerId, boolean>;
+  ambientEnabled: Record<AmbientLayerId, boolean>;
   sfxEnabled: boolean;
 }
 
