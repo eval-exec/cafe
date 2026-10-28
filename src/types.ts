@@ -91,12 +91,41 @@ export type ActivityStatus =
   | 'chatting'
   | 'dnd';
 
+export type SocialProvider = 'github' | 'x';
+
+export interface SocialIdentity {
+  id: string;
+  userId: string;
+  provider: SocialProvider;
+  providerUserId: string;
+  username: string;
+  displayName: string;
+  avatarUrl: string | null;
+  profileUrl: string;
+  isPublic?: boolean;
+}
+
+export interface CafeUser {
+  id: string;
+  displayName: string;
+  preferredIdentityId: string;
+  preferredAvatarIdentityId?: string | null;
+  activity: ActivityStatus;
+  isOnline: boolean;
+  avatar?: AvatarConfig;
+  friends?: string[];
+}
+
 export type ReactionKind = 'wave' | 'hello' | 'coffee' | 'thumbsup' | 'celebrate';
 
 export interface VisitorPresence {
   userId: string;
+  isAuthenticated?: boolean;
   displayName: string;
   avatar: AvatarConfig;
+  avatarUrl?: string | null;
+  primaryIdentity?: SocialIdentity | null;
+  linkedIdentities?: SocialIdentity[];
   seatId: SeatId | null;
   activityStatus: ActivityStatus;
   focusGoal?: string | null;
@@ -123,7 +152,9 @@ export interface ChatMessage {
   tableId: string;
   senderId: string;
   senderName: string;
-  text: String | string;
+  senderAvatarUrl?: string | null;
+  senderProvider?: SocialProvider | null;
+  text: string;
   timestampMs: number;
 }
 
@@ -197,14 +228,23 @@ export interface FriendEntry {
   userId: string;
   displayName: string;
   avatar: AvatarConfig;
+  avatarUrl?: string | null;
+  provider?: SocialProvider | null;
+  username?: string | null;
+  profileUrl?: string | null;
   addedAt: number;
 }
 
 export interface UserProfile {
   userId: string;
   authToken: string;
+  csrfToken?: string;
+  sessionId?: string;
+  isAuthenticated: boolean;
   displayName: string;
-  isRegistered: boolean;
+  preferredIdentityId: string;
+  preferredAvatarIdentityId: string | null;
+  identities: SocialIdentity[];
   avatar: AvatarConfig;
   activityStatus: ActivityStatus;
   invisible: boolean;

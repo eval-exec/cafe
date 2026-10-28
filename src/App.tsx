@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Armchair,
   ArrowLeft,
   CheckCircle2,
   CloudRain,
@@ -9,9 +8,9 @@ import {
   DoorOpen,
   Flame,
   Globe,
-  Hand,
   Keyboard,
   ListTodo,
+  LogIn,
   Maximize2,
   Minimize2,
   Moon,
@@ -22,7 +21,6 @@ import {
   Sun,
   Sunrise,
   Sunset,
-  User,
   Users,
   Volume2,
   VolumeX,
@@ -35,8 +33,17 @@ import { AvatarProfileModal } from './components/ui/AvatarProfileModal';
 import { FocusOverlayPanel } from './components/ui/FocusOverlayPanel';
 import { SocialLoungeDrawer } from './components/ui/SocialLoungeDrawer';
 import {
+  ProviderIcon,
+  VisitorProfileCardModal,
+} from './components/ui/VisitorProfileCardModal';
+import {
+  buildServerOAuthStartUrl,
   ConnectionStatus,
+  fetchAuthSession,
+  getApiBaseUrl,
   multiplayerClient,
+  resolvePublicSocialProfile,
+  validateSafeAvatarUrl,
 } from './network/multiplayerClient';
 import {
   AudioPreferences,
@@ -49,6 +56,8 @@ import {
   SeatId,
   SeatZone,
   SharedTimerState,
+  SocialIdentity,
+  SocialProvider,
   TimeOfDay,
   TimerPhase,
   UserProfile,
@@ -63,8 +72,8 @@ import {
 
 const AUDIO_STORAGE_KEY = 'eval_exec_cafe_audio_v3';
 const FOCUS_STORAGE_KEY = 'eval_exec_cafe_focus_v2';
-const PROFILE_STORAGE_KEY = 'eval_exec_cafe_profile_v1';
-const SESSION_ID_KEY = 'eval_exec_cafe_session_uid_v1';
+const PROFILE_STORAGE_KEY = 'eval_exec_cafe_profile_v2';
+const SESSION_ID_KEY = 'eval_exec_cafe_session_uid_v2';
 
 const DEFAULT_AUDIO_PREFS: AudioPreferences = {
   isPlaying: true,
@@ -100,13 +109,13 @@ const DEFAULT_FOCUS_PREFS: FocusPreferences = {
   tasks: [
     {
       id: 'welcome-1',
-      text: "Choose a seat in Eval Exec's Cafe (Quiet, Shared, or Lounge)",
+      text: "Sign in with GitHub or X & choose a seat in Eval Exec's Cafe",
       completed: false,
       createdAt: Date.now() - 120000,
     },
     {
       id: 'welcome-2',
-      text: 'Customize your isometric SVG avatar & wave to a visitor',
+      text: 'Click a visitor avatar to view their social card & wave hello',
       completed: false,
       createdAt: Date.now() - 60000,
     },
@@ -120,7 +129,12 @@ const DEFAULT_FOCUS_PREFS: FocusPreferences = {
   history: [],
 };
 
-function createSessionIdentity(): { userId: string; authToken: string; defaultSubName: string } {
+function createSessionIdentity(): {
+  userId: string;
+  authToken: string;
+  defaultSubName: string;
+  sessionId?: string;
+} {
   try {
     const existing = sessionStorage.getItem(SESSION_ID_KEY);
     if (existing) {
@@ -131,7 +145,7 @@ function createSessionIdentity(): { userId: string; authToken: string; defaultSu
   }
   const randSuffix = Math.floor(100 + Math.random() * 900);
   const created = {
-    userId: `visitor-${Date.now()}-${randSuffix}`,
+    userId: `preview-${Date.now()}-${randSuffix}`,
     authToken: `tok-${Math.random().toString(36).slice(2)}-${Date.now()}`,
     defaultSubName: `Guest #${randSuffix}`,
   };
@@ -147,7 +161,9 @@ export function App() {
   // Active Café Room (supports Multiple Cafés architecture)
   const [roomId, setRoomId] = useState<CafeRoomId>(() => {
     if (typeof window !== 'undefined') {
-      const r = new URLSearchParams(window.location.search).get('room') as CafeRoomId | null;
+      const r = new URLSearchParams(window.location.search).get(
+        'room'
+      ) as CafeRoomId | null;
       if (r && CAFE_THEMES[r]) return r;
     }
     return 'eval-exec-flagship';
@@ -183,8 +199,11 @@ export function App() {
   // Environment & Accessibility State
   const [timeOfDay, setTimeOfDay] = useState<TimeOfDay>(() => {
     if (typeof window !== 'undefined') {
-      const tod = new URLSearchParams(window.location.search).get('tod') as TimeOfDay | null;
-      if (tod && ['morning', 'afternoon', 'dusk', 'night'].includes(tod)) return tod;
+      const tod = new URLSearchParams(window.location.search).get(
+        'tod'
+      ) as TimeOfDay | null;
+      if (tod && ['morning', 'afternoon', 'dusk', 'night'].includes(tod))
+        return tod;
     }
     return 'afternoon';
   });
@@ -196,35 +215,97 @@ export function App() {
   });
   const [isZenFullscreen, setIsZenFullscreen] = useState(false);
 
-  // User Profile & Avatar Identity
+  // User Profile & Social Identity State
   const [profile, setProfile] = useState<UserProfile>(() => {
     const sessionIdent = createSessionIdentity();
-    const urlName =
+    const params =
       typeof window !== 'undefined'
-        ? new URLSearchParams(window.location.search).get('name')
+        ? new URLSearchParams(window.location.search)
         : null;
+    const ghParam = params?.get('github');
+    const xParam = params?.get('x');
+
+    if (ghParam || xParam) {
+      const prov: SocialProvider = ghParam ? 'github' : 'x';
+      const handle = (ghParam || xParam || 'eval-exec')
+        .replace(/[^a-zA-Z0-9_-]/g, '')
+        .slice(0, 39);
+      const dispName =
+        params?.get('name') ||
+        (handle === 'eval-exec' || handle === 'eval_exec'
+          ? 'Eval Exec'
+          : handle);
+      const userId = `usr_${prov}_${handle.toLowerCase()}`;
+      const identId = `id_${prov}_${handle.toLowerCase()}`;
+      const avatarUrl =
+        prov === 'github'
+          ? `https://github.com/${handle}.png?size=160`
+          : `https://unavatar.io/x/${handle}`;
+      const ident: SocialIdentity = {
+        id: identId,
+        userId,
+        provider: prov,
+        providerUserId: handle.toLowerCase(),
+        username: handle,
+        displayName: dispName,
+        avatarUrl,
+        profileUrl:
+          prov === 'github'
+            ? `https://github.com/${handle}`
+            : `https://x.com/${handle}`,
+        isPublic: true,
+      };
+      return {
+        userId,
+        authToken: sessionIdent.authToken,
+        isAuthenticated: true,
+        displayName: dispName,
+        preferredIdentityId: identId,
+        preferredAvatarIdentityId: identId,
+        identities: [ident],
+        avatar: {
+          skinTone: '#F2C6A0',
+          hairStyle: 'short',
+          hairColor: '#4A2E1B',
+          clothingColor: prov === 'github' ? '#4E7D6B' : '#3B5978',
+          accessory: 'glasses',
+        },
+        activityStatus: 'coding',
+        invisible: false,
+        skipAnimations: false,
+        favoriteSeats: [],
+        friends: [],
+        mutedUserIds: [],
+        blockedUserIds: [],
+      };
+    }
+
     try {
       const saved = localStorage.getItem(PROFILE_STORAGE_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
-        return {
-          ...parsed,
-          userId: sessionIdent.userId,
-          authToken: sessionIdent.authToken,
-          displayName: urlName || parsed.displayName || sessionIdent.defaultSubName,
-        };
+        if (parsed && parsed.isAuthenticated && Array.isArray(parsed.identities) && parsed.identities.length > 0) {
+          return {
+            ...parsed,
+            sessionId: sessionIdent.sessionId || parsed.sessionId,
+          };
+        }
       }
     } catch {
       // ignore
     }
+
     const paletteChoices = ['#4E7D6B', '#B85D3B', '#4A6278', '#8C4A32', '#6B5B7B'];
     const randomColor =
       paletteChoices[Math.floor(Math.random() * paletteChoices.length)];
     return {
       userId: sessionIdent.userId,
       authToken: sessionIdent.authToken,
-      displayName: urlName || sessionIdent.defaultSubName,
-      isRegistered: false,
+      isAuthenticated: false,
+      displayName: sessionIdent.defaultSubName,
+      preferredIdentityId: '',
+      preferredAvatarIdentityId: null,
+      identities: [],
       avatar: {
         skinTone: '#F2C6A0',
         hairStyle: 'short',
@@ -241,6 +322,8 @@ export function App() {
       blockedUserIds: [],
     };
   });
+
+  const [authModalNotice, setAuthModalNotice] = useState<string | null>(null);
 
   // Persisted Audio Preferences
   const [audioPrefs, setAudioPrefs] = useState<AudioPreferences>(() => {
@@ -292,6 +375,9 @@ export function App() {
   const [connectionStatus, setConnectionStatus] =
     useState<ConnectionStatus>('reconnecting');
   const [visitors, setVisitors] = useState<VisitorPresence[]>([]);
+  const [leavingVisitors, setLeavingVisitors] = useState<
+    Record<string, VisitorPresence>
+  >({});
   const [seatOccupancy, setSeatOccupancy] = useState<Record<string, string>>({});
   const [sharedTimers, setSharedTimers] = useState<
     Record<string, SharedTimerState>
@@ -319,6 +405,89 @@ export function App() {
   const [isSocialOpen, setIsSocialOpen] = useState(false);
   const [isRoomMenuOpen, setIsRoomMenuOpen] = useState(false);
 
+  // Resolve active primary identity & avatar URL from profile
+  const activePrimaryIdentity: SocialIdentity | null = React.useMemo(() => {
+    if (!profile.isAuthenticated || profile.identities.length === 0) return null;
+    return (
+      profile.identities.find((i) => i.id === profile.preferredIdentityId) ||
+      profile.identities[0]
+    );
+  }, [profile.isAuthenticated, profile.identities, profile.preferredIdentityId]);
+
+  const activeAvatarUrl: string | null = React.useMemo(() => {
+    if (!profile.isAuthenticated || profile.identities.length === 0) return null;
+    if (profile.preferredAvatarIdentityId) {
+      const match = profile.identities.find(
+        (i) => i.id === profile.preferredAvatarIdentityId
+      );
+      if (match?.avatarUrl) return validateSafeAvatarUrl(match.avatarUrl);
+    }
+    return validateSafeAvatarUrl(activePrimaryIdentity?.avatarUrl);
+  }, [
+    profile.isAuthenticated,
+    profile.identities,
+    profile.preferredAvatarIdentityId,
+    activePrimaryIdentity,
+  ]);
+
+  // Hydrate OAuth 2.0 session on mount (handles ?auth_session=... or ?auth_error=... callback params)
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const url = new URL(window.location.href);
+    const authSessionParam = url.searchParams.get('auth_session');
+    const authErrorParam = url.searchParams.get('auth_error');
+
+    if (authErrorParam) {
+      const readableError =
+        authErrorParam === 'IdentityAlreadyLinked'
+          ? 'That GitHub or X account is already linked to another café user.'
+          : authErrorParam === 'access_denied'
+          ? 'Sign-in was cancelled.'
+          : `Authentication error: ${authErrorParam}`;
+      setCompletionBanner(readableError);
+      setAuthModalNotice(readableError);
+      setIsAvatarModalOpen(true);
+      window.setTimeout(() => setCompletionBanner(null), 5000);
+      url.searchParams.delete('auth_error');
+      window.history.replaceState({}, '', url.toString());
+    }
+
+    const sessionToCheck = authSessionParam || profile.sessionId;
+    if (authSessionParam) {
+      url.searchParams.delete('auth_session');
+      window.history.replaceState({}, '', url.toString());
+    }
+
+    fetchAuthSession(sessionToCheck).then((sess) => {
+      if (sess && sess.authenticated && sess.user && sess.identities) {
+        const u = sess.user;
+        const idents = sess.identities;
+        setProfile((prev) => ({
+          ...prev,
+          userId: u.id,
+          authToken: sess.wsToken || prev.authToken,
+          csrfToken: sess.csrfToken,
+          sessionId: sess.sessionId,
+          isAuthenticated: true,
+          displayName: u.displayName,
+          preferredIdentityId: u.preferredIdentityId,
+          preferredAvatarIdentityId:
+            u.preferredAvatarIdentityId !== undefined
+              ? u.preferredAvatarIdentityId
+              : u.preferredIdentityId,
+          identities: idents,
+          activityStatus: (u.activity as UserProfile['activityStatus']) || prev.activityStatus,
+        }));
+        if (authSessionParam) {
+          setCompletionBanner(
+            `Welcome to Eval Exec's Cafe, ${u.displayName}! Your verified profile picture is now active.`
+          );
+          window.setTimeout(() => setCompletionBanner(null), 4200);
+        }
+      }
+    });
+  }, []);
+
   // Connect to Real-Time Multiplayer Server / Mesh on Mount
   useEffect(() => {
     multiplayerClient.connect(
@@ -326,8 +495,12 @@ export function App() {
       {
         userId: profile.userId,
         authToken: profile.authToken,
+        isAuthenticated: profile.isAuthenticated,
         displayName: profile.displayName,
         avatar: profile.avatar,
+        avatarUrl: activeAvatarUrl,
+        primaryIdentity: activePrimaryIdentity,
+        linkedIdentities: profile.identities,
         activityStatus: profile.activityStatus,
         focusGoal: focusPrefs.currentGoal,
         shareFocusGoal: focusPrefs.shareFocusGoal,
@@ -338,10 +511,49 @@ export function App() {
     );
 
     const unsubSnap = multiplayerClient.onSnapshot((snap) => {
-      setVisitors(snap.visitors);
+      setVisitors((prevVisitors) => {
+        // Detect any visitor who was present and just left so we can animate their departure
+        const nextIds = new Set(snap.visitors.map((v) => v.userId));
+        prevVisitors.forEach((oldV) => {
+          if (!nextIds.has(oldV.userId)) {
+            setLeavingVisitors((prevLeave) => ({
+              ...prevLeave,
+              [oldV.userId]: oldV,
+            }));
+            window.setTimeout(() => {
+              setLeavingVisitors((prevLeave) => {
+                const copy = { ...prevLeave };
+                delete copy[oldV.userId];
+                return copy;
+              });
+            }, 650);
+          }
+        });
+        return snap.visitors;
+      });
       setSeatOccupancy(snap.seatOccupancy || {});
       setSharedTimers(snap.sharedTimers || {});
       setChatMessages(snap.recentMessages || []);
+    });
+
+    const unsubLeft = multiplayerClient.onVisitorLeft(({ userId }) => {
+      setVisitors((prev) => {
+        const departing = prev.find((v) => v.userId === userId);
+        if (departing) {
+          setLeavingVisitors((prevLeave) => ({
+            ...prevLeave,
+            [userId]: departing,
+          }));
+          window.setTimeout(() => {
+            setLeavingVisitors((prevLeave) => {
+              const copy = { ...prevLeave };
+              delete copy[userId];
+              return copy;
+            });
+          }, 650);
+        }
+        return prev.filter((v) => v.userId !== userId);
+      });
     });
 
     const unsubRx = multiplayerClient.onReaction((rx) => {
@@ -375,12 +587,19 @@ export function App() {
     });
 
     const unsubErr = multiplayerClient.onError((reason) => {
+      if (reason.includes('AuthenticationRequired') || reason.includes('Sign in')) {
+        setAuthModalNotice(
+          'Please sign in with GitHub or X to claim a persistent seat or participate in multiplayer.'
+        );
+        setIsAvatarModalOpen(true);
+      }
       setCompletionBanner(reason);
       window.setTimeout(() => setCompletionBanner(null), 3500);
     });
 
     return () => {
       unsubSnap();
+      unsubLeft();
       unsubRx();
       unsubChat();
       unsubStatus();
@@ -388,7 +607,7 @@ export function App() {
     };
   }, []);
 
-  // Sync Profile & Focus Goal Changes to Multiplayer Presence & LocalStorage
+  // Sync Profile & Focus Goal Changes to Multiplayer Presence, Server & LocalStorage
   useEffect(() => {
     try {
       localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(profile));
@@ -396,8 +615,14 @@ export function App() {
       // ignore
     }
     multiplayerClient.updateIdentity({
+      userId: profile.userId,
+      authToken: profile.authToken,
+      isAuthenticated: profile.isAuthenticated,
       displayName: profile.displayName,
       avatar: profile.avatar,
+      avatarUrl: activeAvatarUrl,
+      primaryIdentity: activePrimaryIdentity,
+      linkedIdentities: profile.identities,
       activityStatus: profile.activityStatus,
       focusGoal: focusPrefs.currentGoal,
       shareFocusGoal: focusPrefs.shareFocusGoal,
@@ -406,6 +631,8 @@ export function App() {
     });
   }, [
     profile,
+    activeAvatarUrl,
+    activePrimaryIdentity,
     focusPrefs.currentGoal,
     focusPrefs.shareFocusGoal,
     focusStartedAtMs,
@@ -485,43 +712,55 @@ export function App() {
       activeTableTimer?.isRunning &&
       activeTableTimer.participants.includes(profile.userId)
     ) {
-      // Handled by shared timer sync effect above
       return;
     }
 
     const interval = window.setInterval(() => {
       setSecondsLeft((prev) => {
         if (prev <= 1) {
+          soundEngine.playTimerComplete();
           setIsTimerRunning(false);
           setFocusStartedAtMs(null);
-          soundEngine.playTimerComplete();
+
           if (timerPhase === 'focus') {
-            const record = {
-              id: `sess-${Date.now()}`,
-              completedAt: Date.now(),
-              durationMinutes: focusPrefs.focusMinutes,
-              goal: focusPrefs.currentGoal,
-              roomName: activeTheme.name,
-              seatName: activeSeat?.name || 'Café Overview',
-            };
+            const sessionMins = focusPrefs.focusMinutes;
+            const seatLabel = selectedSeatId
+              ? SEATS[selectedSeatId].name
+              : 'Café Overview';
+
             setFocusPrefs((fp) => ({
               ...fp,
               completedSessions: fp.completedSessions + 1,
-              totalFocusMinutes: fp.totalFocusMinutes + fp.focusMinutes,
-              history: [record, ...(fp.history || []).slice(0, 29)],
+              totalFocusMinutes: fp.totalFocusMinutes + sessionMins,
               tasks: fp.tasks.map((t) =>
                 t.id === 'welcome-3' ? { ...t, completed: true } : t
               ),
+              history: [
+                ...fp.history,
+                {
+                  id: `sess-${Date.now()}`,
+                  completedAt: Date.now(),
+                  durationMinutes: sessionMins,
+                  goal: fp.currentGoal || 'Focused study session',
+                  roomName: activeTheme.name,
+                  seatName: seatLabel,
+                },
+              ],
             }));
-            multiplayerClient.sendReaction('celebrate', null);
+
             setCompletionBanner(
-              'Focus session complete! Henri poured you a fresh cup of coffee ☕'
+              `Focus session complete! (${sessionMins}m at ${seatLabel}). Enjoy a warm coffee break.`
             );
+            window.setTimeout(() => setCompletionBanner(null), 5500);
+
+            setTimerPhase('shortBreak');
+            return focusPrefs.shortBreakMinutes * 60;
           } else {
-            setCompletionBanner('Break finished — ready to settle back into focus?');
+            setCompletionBanner('Break finished! Ready for your next focus block.');
+            window.setTimeout(() => setCompletionBanner(null), 4500);
+            setTimerPhase('focus');
+            return focusPrefs.focusMinutes * 60;
           }
-          window.setTimeout(() => setCompletionBanner(null), 6000);
-          return 0;
         }
         return prev - 1;
       });
@@ -531,42 +770,280 @@ export function App() {
   }, [
     isTimerRunning,
     timerPhase,
+    focusPrefs.focusMinutes,
+    focusPrefs.shortBreakMinutes,
+    selectedSeatId,
+    activeTheme.name,
     activeTableTimer,
     profile.userId,
-    focusPrefs.focusMinutes,
-    focusPrefs.currentGoal,
-    activeTheme.name,
-    activeSeat,
   ]);
 
-  // Keyboard shortcut: Escape closes popovers or stands up from seat
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        if (isAvatarModalOpen || isAudioOpen || isNotebookOpen || isSocialOpen || isRoomMenuOpen) {
-          setIsAvatarModalOpen(false);
-          setIsAudioOpen(false);
-          setIsNotebookOpen(false);
-          setIsSocialOpen(false);
-          setIsRoomMenuOpen(false);
-        } else if (selectedSeatId) {
-          handleStandUp();
-        }
+  // Prompt unauthenticated visitors to sign in with GitHub or X
+  const handleRequireAuth = (reason?: string) => {
+    setAuthModalNotice(
+      reason ||
+        'Sign in with GitHub or X to occupy a persistent seat, chat, add friends, and show your profile picture.'
+    );
+    setIsAvatarModalOpen(true);
+  };
+
+  // Start OAuth 2.0 + PKCE (S256) Login or Account Linking
+  const handleStartOAuth = async (
+    provider: SocialProvider,
+    mode: 'login' | 'link',
+    usernameHint?: string,
+    displayNameHint?: string
+  ) => {
+    // If connected to the Rust OAuth 2.0 + PKCE server, execute the server OAuth redirect flow
+    if (connectionStatus === 'connected-server') {
+      const returnTo = window.location.href.split('#')[0];
+      const oauthUrl = buildServerOAuthStartUrl({
+        provider,
+        mode,
+        returnTo,
+        sessionId: profile.sessionId,
+        csrfToken: profile.csrfToken,
+        loginHint: usernameHint,
+      });
+      window.location.assign(oauthUrl);
+      return;
+    }
+
+    // Fallback for static GitHub Pages: Web Crypto SHA-256 PKCE + Live Public GitHub/X Profile Lookup
+    const resolved = await resolvePublicSocialProfile(
+      provider,
+      usernameHint || (provider === 'github' ? 'eval-exec' : 'eval_exec'),
+      displayNameHint
+    );
+
+    const newIdentId = `id_${provider}_${resolved.providerUserId}`;
+
+    // Account-linking conflict check against existing active visitors in the room
+    const conflictingVisitor = visitors.find(
+      (v) =>
+        v.userId !== profile.userId &&
+        (v.primaryIdentity?.id === newIdentId ||
+          v.linkedIdentities?.some((li) => li.id === newIdentId))
+    );
+    if (conflictingVisitor) {
+      throw new Error(
+        `@${resolved.username} (${provider.toUpperCase()}) is already linked to another active café visitor.`
+      );
+    }
+
+    if (mode === 'link' && profile.isAuthenticated) {
+      const newIdent: SocialIdentity = {
+        id: newIdentId,
+        userId: profile.userId,
+        provider: resolved.provider,
+        providerUserId: resolved.providerUserId,
+        username: resolved.username,
+        displayName: resolved.displayName,
+        avatarUrl: resolved.avatarUrl,
+        profileUrl: resolved.profileUrl,
+        isPublic: true,
+      };
+      const filtered = profile.identities.filter((i) => i.id !== newIdentId);
+      const nextIdentities = [...filtered, newIdent];
+      setProfile((prev) => ({
+        ...prev,
+        identities: nextIdentities,
+      }));
+      setCompletionBanner(
+        `Linked @${resolved.username} (${
+          provider === 'github' ? 'GitHub' : 'X'
+        }) to your café account!`
+      );
+      window.setTimeout(() => setCompletionBanner(null), 4000);
+    } else {
+      // Login mode: use stable internal user ID derived from first provider identity (never merging by username across providers)
+      const internalUserId = `usr_${provider}_${resolved.providerUserId}`;
+      const newIdent: SocialIdentity = {
+        id: newIdentId,
+        userId: internalUserId,
+        provider: resolved.provider,
+        providerUserId: resolved.providerUserId,
+        username: resolved.username,
+        displayName: resolved.displayName,
+        avatarUrl: resolved.avatarUrl,
+        profileUrl: resolved.profileUrl,
+        isPublic: true,
+      };
+      setProfile((prev) => ({
+        ...prev,
+        userId: internalUserId,
+        isAuthenticated: true,
+        displayName: resolved.displayName,
+        preferredIdentityId: newIdentId,
+        preferredAvatarIdentityId: newIdentId,
+        identities: [newIdent],
+      }));
+      setCompletionBanner(
+        `Signed in as ${resolved.displayName} (@${resolved.username}) via ${
+          provider === 'github' ? 'GitHub' : 'X'
+        }!`
+      );
+      window.setTimeout(() => setCompletionBanner(null), 4000);
+    }
+    setAuthModalNotice(null);
+  };
+
+  // Update Profile & Sync with Server if Session Active
+  const handleUpdateProfile = async (next: UserProfile) => {
+    setProfile(next);
+    if (next.sessionId && next.csrfToken && connectionStatus === 'connected-server') {
+      try {
+        await fetch(`${getApiBaseUrl()}/api/auth/preferences`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${next.sessionId}`,
+            'X-CSRF-Token': next.csrfToken,
+          },
+          credentials: 'include',
+          body: JSON.stringify({
+            displayName: next.displayName,
+            preferredIdentityId: next.preferredIdentityId,
+            preferredAvatarIdentityId: next.preferredAvatarIdentityId,
+            publicIdentityIds: next.identities
+              .filter((i) => i.isPublic !== false)
+              .map((i) => i.id),
+            activity: next.activityStatus,
+            avatar: next.avatar,
+            friends: next.friends.map((f) => f.userId),
+          }),
+        });
+      } catch {
+        // ignore network error
       }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [
-    isAvatarModalOpen,
-    isAudioOpen,
-    isNotebookOpen,
-    isSocialOpen,
-    isRoomMenuOpen,
-    selectedSeatId,
-  ]);
+    }
+  };
 
-  // Switch Café Room Instance
+  // Disconnect a Linked Provider (GitHub or X)
+  const handleDisconnectIdentity = async (identityId: string) => {
+    if (profile.identities.length <= 1) {
+      setAuthModalNotice(
+        'Cannot disconnect your only login provider. Connect a second provider first.'
+      );
+      return;
+    }
+
+    if (
+      profile.sessionId &&
+      profile.csrfToken &&
+      connectionStatus === 'connected-server'
+    ) {
+      try {
+        const res = await fetch(
+          `${getApiBaseUrl()}/api/auth/identities/${encodeURIComponent(
+            identityId
+          )}`,
+          {
+            method: 'DELETE',
+            headers: {
+              Authorization: `Bearer ${profile.sessionId}`,
+              'X-CSRF-Token': profile.csrfToken,
+            },
+            credentials: 'include',
+          }
+        );
+        if (res.ok) {
+          const data = await res.json();
+          if (data.user && data.identities) {
+            setProfile((prev) => ({
+              ...prev,
+              preferredIdentityId: data.user.preferredIdentityId,
+              preferredAvatarIdentityId: data.user.preferredAvatarIdentityId,
+              identities: data.identities,
+            }));
+            setCompletionBanner('Disconnected linked social provider.');
+            window.setTimeout(() => setCompletionBanner(null), 3500);
+            return;
+          }
+        }
+      } catch {
+        // fallback to local update
+      }
+    }
+
+    const remaining = profile.identities.filter((i) => i.id !== identityId);
+    if (remaining.length === 0) return;
+    const fallbackId = remaining[0].id;
+    setProfile((prev) => ({
+      ...prev,
+      identities: remaining,
+      preferredIdentityId:
+        prev.preferredIdentityId === identityId
+          ? fallbackId
+          : prev.preferredIdentityId,
+      preferredAvatarIdentityId:
+        prev.preferredAvatarIdentityId === identityId
+          ? fallbackId
+          : prev.preferredAvatarIdentityId,
+    }));
+    setCompletionBanner('Disconnected linked social provider.');
+    window.setTimeout(() => setCompletionBanner(null), 3500);
+  };
+
+  // Sign Out & Immediately Remove Active Café Presence + Release Seat
+  const handleSignOut = async () => {
+    if (
+      profile.sessionId &&
+      profile.csrfToken &&
+      connectionStatus === 'connected-server'
+    ) {
+      try {
+        await fetch(`${getApiBaseUrl()}/api/auth/logout`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${profile.sessionId}`,
+            'X-CSRF-Token': profile.csrfToken,
+          },
+          credentials: 'include',
+        });
+      } catch {
+        // ignore
+      }
+    }
+
+    multiplayerClient.removeActivePresence();
+    try {
+      localStorage.removeItem(PROFILE_STORAGE_KEY);
+      sessionStorage.removeItem(SESSION_ID_KEY);
+    } catch {
+      // ignore
+    }
+
+    const freshGuest = createSessionIdentity();
+    setSelectedSeatId(null);
+    if (scene === 'seated') {
+      setScene('interior');
+    }
+    setProfile((prev) => ({
+      ...prev,
+      userId: freshGuest.userId,
+      authToken: freshGuest.authToken,
+      sessionId: undefined,
+      csrfToken: undefined,
+      isAuthenticated: false,
+      displayName: freshGuest.defaultSubName,
+      preferredIdentityId: '',
+      preferredAvatarIdentityId: null,
+      identities: [],
+    }));
+    setIsAvatarModalOpen(false);
+    setCompletionBanner(
+      'Signed out of Eval Exec’s Cafe. Your seat has been released.'
+    );
+    window.setTimeout(() => setCompletionBanner(null), 4000);
+  };
+
+  // Switch Between Multiple Café Worlds
   const handleSwitchRoom = (nextRoomId: CafeRoomId) => {
+    if (nextRoomId === roomId) {
+      setIsRoomMenuOpen(false);
+      return;
+    }
     const nextTheme = CAFE_THEMES[nextRoomId];
     setRoomId(nextRoomId);
     setSelectedSeatId(null);
@@ -574,22 +1051,25 @@ export function App() {
     setTimeOfDay(nextTheme.defaultTimeOfDay);
     multiplayerClient.switchRoom(nextRoomId);
     setIsRoomMenuOpen(false);
+    setCompletionBanner(`Entered ${nextTheme.name} — ${nextTheme.subtitle}`);
+    window.setTimeout(() => setCompletionBanner(null), 3500);
   };
 
-  // Step Inside the Café from the Street
+  // Enter the Café from the Street
   const handleEnterCafe = () => {
-    soundEngine.playDoorBell();
-
-    if (audioPrefs.autoPlay && !audioPrefs.isPlaying && !audioPrefs.quietMode) {
+    soundEngine.unlockIfNeeded();
+    if (audioPrefs.autoPlay) {
       const nextAudio: AudioPreferences = {
         ...audioPrefs,
         isPlaying: true,
+        quietMode: false,
       };
       setAudioPrefs(nextAudio);
       soundEngine.initAndApply(nextAudio);
     }
+    soundEngine.playDoorBell();
 
-    if (profile.skipAnimations || reducedMotion) {
+    if (reducedMotion || profile.skipAnimations) {
       setScene('interior');
       return;
     }
@@ -610,8 +1090,15 @@ export function App() {
     setScene('street');
   };
 
-  // Sit Down at One of the 12 Seats (Authoritative Seat Claiming)
+  // Sit Down at One of the 12 Seats (Requires GitHub or X Authentication)
   const handleSelectSeat = (seatId: SeatId) => {
+    if (!profile.isAuthenticated) {
+      handleRequireAuth(
+        `Sign in with GitHub or X to sit at ${SEATS[seatId].name} and join the live café.`
+      );
+      return;
+    }
+
     const holderId = seatOccupancy[seatId];
     if (holderId && holderId !== profile.userId) {
       const holder = visitors.find((v) => v.userId === holderId);
@@ -697,6 +1184,10 @@ export function App() {
     kind: ReactionKind,
     targetUserId: string | null = null
   ) => {
+    if (!profile.isAuthenticated) {
+      handleRequireAuth('Sign in with GitHub or X to wave and send reactions.');
+      return;
+    }
     multiplayerClient.sendReaction(kind, targetUserId);
     setFocusPrefs((prev) => ({
       ...prev,
@@ -704,6 +1195,52 @@ export function App() {
         t.id === 'welcome-2' ? { ...t, completed: true } : t
       ),
     }));
+  };
+
+  const handleAddFriend = (visitor: VisitorPresence) => {
+    if (!profile.isAuthenticated) {
+      handleRequireAuth('Sign in with GitHub or X to add café friends.');
+      return;
+    }
+    if (profile.friends.some((f) => f.userId === visitor.userId)) return;
+    const nextFriends = [
+      ...profile.friends,
+      {
+        userId: visitor.userId,
+        displayName: visitor.displayName,
+        avatar: visitor.avatar,
+        avatarUrl: visitor.avatarUrl || visitor.primaryIdentity?.avatarUrl || null,
+        provider: visitor.primaryIdentity?.provider || null,
+        username: visitor.primaryIdentity?.username || null,
+        profileUrl: visitor.primaryIdentity?.profileUrl || null,
+        addedAt: Date.now(),
+      },
+    ];
+    handleUpdateProfile({ ...profile, friends: nextFriends });
+  };
+
+  const handleRemoveFriend = (userId: string) => {
+    const nextFriends = profile.friends.filter((f) => f.userId !== userId);
+    handleUpdateProfile({ ...profile, friends: nextFriends });
+  };
+
+  const handleInviteToTable = (visitor: VisitorPresence) => {
+    const url = new URL(window.location.href);
+    url.searchParams.set('room', roomId);
+    if (selectedSeatId) {
+      const tableId = SEATS[selectedSeatId].tableId;
+      const openSeat = SEAT_LIST.find(
+        (s) =>
+          s.tableId === tableId &&
+          s.id !== selectedSeatId &&
+          !seatOccupancy[s.id]
+      );
+      url.searchParams.set('seat', openSeat ? openSeat.id : selectedSeatId);
+    } else {
+      url.searchParams.set('scene', 'interior');
+    }
+    navigator.clipboard?.writeText(url.toString()).catch(() => {});
+    multiplayerClient.sendReaction('wave', visitor.userId);
   };
 
   const toggleFullscreen = () => {
@@ -735,22 +1272,27 @@ export function App() {
   const isRaining = audioPrefs.ambientEnabled.rain && !audioPrefs.quietMode;
   const isFireplaceActive = audioPrefs.ambientEnabled.fire && !audioPrefs.quietMode;
 
-  // Ensure our own avatar is always included in the rendered visitors list if not invisible
+  // Authenticated visitors appear in the café; unauthenticated visitors preview the café
   const effectiveVisitors: VisitorPresence[] = React.useMemo(() => {
     const filtered = visitors.filter(
       (v) => !profile.blockedUserIds.includes(v.userId)
     );
-    if (profile.invisible) {
+    if (!profile.isAuthenticated || profile.invisible) {
       return filtered.filter((v) => v.userId !== profile.userId);
     }
+    const publicIdents = profile.identities.filter((i) => i.isPublic !== false);
     const hasSelf = filtered.some((v) => v.userId === profile.userId);
     if (hasSelf) {
       return filtered.map((v) =>
         v.userId === profile.userId
           ? {
               ...v,
+              isAuthenticated: true,
               displayName: profile.displayName,
               avatar: profile.avatar,
+              avatarUrl: activeAvatarUrl,
+              primaryIdentity: activePrimaryIdentity,
+              linkedIdentities: publicIdents,
               seatId: selectedSeatId,
               activityStatus: profile.activityStatus,
               focusGoal: focusPrefs.shareFocusGoal
@@ -764,8 +1306,12 @@ export function App() {
       ...filtered,
       {
         userId: profile.userId,
+        isAuthenticated: true,
         displayName: profile.displayName,
         avatar: profile.avatar,
+        avatarUrl: activeAvatarUrl,
+        primaryIdentity: activePrimaryIdentity,
+        linkedIdentities: publicIdents,
         seatId: selectedSeatId,
         activityStatus: profile.activityStatus,
         focusGoal: focusPrefs.shareFocusGoal ? focusPrefs.currentGoal : null,
@@ -778,6 +1324,8 @@ export function App() {
   }, [
     visitors,
     profile,
+    activeAvatarUrl,
+    activePrimaryIdentity,
     selectedSeatId,
     focusPrefs.currentGoal,
     focusPrefs.shareFocusGoal,
@@ -811,6 +1359,7 @@ export function App() {
             theme={activeTheme}
             selfUserId={profile.userId}
             visitors={effectiveVisitors}
+            leavingVisitors={leavingVisitors}
             activeReactions={activeReactions}
             selectedSeatId={selectedSeatId}
             hoveredSeatId={hoveredSeatId}
@@ -825,7 +1374,6 @@ export function App() {
             onHoverSeat={setHoveredSeatId}
             onSelectVisitor={(v) => {
               setSelectedVisitor(v);
-              setIsSocialOpen(true);
             }}
             onSipCoffee={() => soundEngine.playCoffeeSip()}
           />
@@ -935,28 +1483,65 @@ export function App() {
           )}
         </div>
 
-        {/* Center: Live Multiplayer Presence, Wave & Avatar Customization Bar */}
+        {/* Center: GitHub/X Social Identity Pill, Live Room Presence & Wave */}
         <div className="flex items-center gap-1.5 pointer-events-auto">
-          {/* Avatar & Profile Trigger Pill */}
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              setIsAvatarModalOpen(true);
-            }}
-            className="flex items-center gap-2 px-3 py-2 rounded-2xl bg-[#1A130F]/90 hover:bg-[#281D17] backdrop-blur-md border border-[#D48C46]/30 text-xs text-[#F4ECE1] shadow-lg transition-all"
-            title="Customize your SVG avatar & status"
-          >
-            <span
-              className="w-3 h-3 rounded-full border border-white/40"
-              style={{ backgroundColor: profile.avatar.clothingColor }}
-            />
-            <span className="font-semibold max-w-[105px] truncate">
-              {profile.displayName}
-            </span>
-            <span className="text-[10px] px-1.5 py-0.2 rounded bg-white/10 text-[#F3B664] hidden sm:inline">
-              {profile.activityStatus}
-            </span>
-          </button>
+          {profile.isAuthenticated ? (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setAuthModalNotice(null);
+                setIsAvatarModalOpen(true);
+              }}
+              className="flex items-center gap-2 px-3 py-1.5 rounded-2xl bg-[#1A130F]/90 hover:bg-[#281D17] backdrop-blur-md border border-[#68D391]/45 text-xs text-[#F4ECE1] shadow-lg transition-all"
+              title="Manage your GitHub / X identity & isometric avatar"
+            >
+              <div className="relative w-6 h-6 rounded-full bg-amber-950 border border-[#68D391] overflow-hidden flex items-center justify-center shrink-0">
+                {activeAvatarUrl ? (
+                  <img
+                    src={activeAvatarUrl}
+                    alt={profile.displayName}
+                    referrerPolicy="no-referrer"
+                    crossOrigin="anonymous"
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  <span className="text-[10px] font-bold text-amber-200">
+                    {profile.displayName.slice(0, 1).toUpperCase()}
+                  </span>
+                )}
+              </div>
+              {activePrimaryIdentity && (
+                <ProviderIcon
+                  provider={activePrimaryIdentity.provider}
+                  className="w-3.5 h-3.5 text-[#F3B664]"
+                />
+              )}
+              <span className="font-semibold max-w-[115px] truncate">
+                {profile.displayName}
+              </span>
+              <span className="text-[10px] px-1.5 py-0.2 rounded bg-white/10 text-[#F3B664] hidden sm:inline">
+                {profile.activityStatus}
+              </span>
+            </button>
+          ) : (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setAuthModalNotice(null);
+                setIsAvatarModalOpen(true);
+              }}
+              className="flex items-center gap-2 px-3.5 py-2 rounded-2xl bg-gradient-to-r from-[#241A14] to-[#2F2119] hover:from-[#2F2119] hover:to-[#3B291F] backdrop-blur-md border border-[#F3B664]/55 text-xs text-[#FFE0B5] font-semibold shadow-lg transition-all"
+              title="Sign in with GitHub or X to claim a seat and display your profile picture"
+            >
+              <LogIn className="w-3.5 h-3.5 text-[#F3B664]" />
+              <ProviderIcon provider="github" className="w-3.5 h-3.5" />
+              <ProviderIcon provider="x" className="w-3 h-3" />
+              <span>Sign In</span>
+              <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-amber-500/20 text-amber-200 hidden md:inline">
+                Preview Mode
+              </span>
+            </button>
+          )}
 
           {/* Live Room Presence & Social Lounge Trigger */}
           <button
@@ -997,10 +1582,26 @@ export function App() {
           <div className="flex items-center bg-[#1A130F]/85 backdrop-blur-md p-1 rounded-2xl border border-[#D48C46]/25 shadow-lg">
             {(
               [
-                { id: 'morning', label: 'Morning', icon: <Sunrise className="w-3.5 h-3.5" /> },
-                { id: 'afternoon', label: 'Afternoon', icon: <Sun className="w-3.5 h-3.5" /> },
-                { id: 'dusk', label: 'Evening', icon: <Sunset className="w-3.5 h-3.5" /> },
-                { id: 'night', label: 'Night', icon: <Moon className="w-3.5 h-3.5" /> },
+                {
+                  id: 'morning',
+                  label: 'Morning',
+                  icon: <Sunrise className="w-3.5 h-3.5" />,
+                },
+                {
+                  id: 'afternoon',
+                  label: 'Afternoon',
+                  icon: <Sun className="w-3.5 h-3.5" />,
+                },
+                {
+                  id: 'dusk',
+                  label: 'Evening',
+                  icon: <Sunset className="w-3.5 h-3.5" />,
+                },
+                {
+                  id: 'night',
+                  label: 'Night',
+                  icon: <Moon className="w-3.5 h-3.5" />,
+                },
               ] as const
             ).map((tod) => (
               <button
@@ -1172,8 +1773,8 @@ export function App() {
       <AudioMixerPopover
         prefs={audioPrefs}
         isOpen={isAudioOpen}
-        onClose={() => setIsAudioOpen(false)}
         onChange={setAudioPrefs}
+        onClose={() => setIsAudioOpen(false)}
       />
 
       <FocusOverlayPanel
@@ -1187,6 +1788,12 @@ export function App() {
         onChangePrefs={setFocusPrefs}
         onSelectPhaseDuration={handleSelectPhaseDuration}
         onStartSharedTimer={() => {
+          if (!profile.isAuthenticated) {
+            handleRequireAuth(
+              'Sign in with GitHub or X to start a shared table Pomodoro timer.'
+            );
+            return;
+          }
           if (!activeSeat) return;
           multiplayerClient.startSharedTimer(
             activeSeat.tableId,
@@ -1196,6 +1803,12 @@ export function App() {
           );
         }}
         onJoinSharedTimer={() => {
+          if (!profile.isAuthenticated) {
+            handleRequireAuth(
+              'Sign in with GitHub or X to join a shared table Pomodoro timer.'
+            );
+            return;
+          }
           if (!activeSeat) return;
           multiplayerClient.joinSharedTimer(activeSeat.tableId);
         }}
@@ -1205,12 +1818,58 @@ export function App() {
         }}
       />
 
-      <AvatarProfileModal
-        profile={profile}
-        isOpen={isAvatarModalOpen}
-        onClose={() => setIsAvatarModalOpen(false)}
-        onChangeProfile={setProfile}
-      />
+      {isAvatarModalOpen && (
+        <AvatarProfileModal
+          profile={profile}
+          authNotice={authModalNotice}
+          onUpdateProfile={handleUpdateProfile}
+          onStartOAuth={handleStartOAuth}
+          onDisconnectIdentity={handleDisconnectIdentity}
+          onSignOut={handleSignOut}
+          onClose={() => {
+            setIsAvatarModalOpen(false);
+            setAuthModalNotice(null);
+          }}
+        />
+      )}
+
+      {selectedVisitor && (
+        <VisitorProfileCardModal
+          visitor={selectedVisitor}
+          profile={profile}
+          currentSeatId={selectedSeatId}
+          seatOccupancy={seatOccupancy}
+          onClose={() => setSelectedVisitor(null)}
+          onSendReaction={handleSendReaction}
+          onAddFriend={handleAddFriend}
+          onRemoveFriend={handleRemoveFriend}
+          onSelectSeat={handleSelectSeat}
+          onInviteToTable={handleInviteToTable}
+          onToggleMuteUser={(uid) => {
+            const exists = profile.mutedUserIds.includes(uid);
+            handleUpdateProfile({
+              ...profile,
+              mutedUserIds: exists
+                ? profile.mutedUserIds.filter((id) => id !== uid)
+                : [...profile.mutedUserIds, uid],
+            });
+          }}
+          onToggleBlockUser={(uid) => {
+            const exists = profile.blockedUserIds.includes(uid);
+            handleUpdateProfile({
+              ...profile,
+              blockedUserIds: exists
+                ? profile.blockedUserIds.filter((id) => id !== uid)
+                : [...profile.blockedUserIds, uid],
+            });
+          }}
+          onReportUser={(uid, reason) => multiplayerClient.reportUser(uid, reason)}
+          onRequireAuth={() => {
+            setSelectedVisitor(null);
+            handleRequireAuth();
+          }}
+        />
+      )}
 
       <SocialLoungeDrawer
         isOpen={isSocialOpen}
@@ -1218,13 +1877,19 @@ export function App() {
         visitors={effectiveVisitors}
         messages={chatMessages}
         activeSeat={activeSeat}
-        selectedVisitor={selectedVisitor}
+        selectedVisitor={null}
         roomName={activeTheme.name}
         onClose={() => setIsSocialOpen(false)}
         onSendReaction={handleSendReaction}
-        onSendChat={(tableId, text) => multiplayerClient.sendChat(tableId, text)}
+        onSendChat={(tableId, text) => {
+          if (!profile.isAuthenticated) {
+            handleRequireAuth('Sign in with GitHub or X to chat in the café.');
+            return;
+          }
+          multiplayerClient.sendChat(tableId, text);
+        }}
         onSelectSeat={handleSelectSeat}
-        onUpdateProfile={setProfile}
+        onUpdateProfile={handleUpdateProfile}
         onReportUser={(uid, reason) => multiplayerClient.reportUser(uid, reason)}
         onClearSelectedVisitor={() => setSelectedVisitor(null)}
       />

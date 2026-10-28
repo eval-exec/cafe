@@ -2,23 +2,30 @@ import {
   ActivityStatus,
   AvatarConfig,
   CafeRoomId,
+  CafeUser,
   ChatMessage,
   ReactionEvent,
   ReactionKind,
   RoomSnapshot,
   SeatId,
   SharedTimerState,
+  SocialIdentity,
+  SocialProvider,
   TimerPhase,
   VisitorPresence,
 } from '../types';
 
 export type ConnectionStatus = 'connected-server' | 'connected-local-mesh' | 'reconnecting';
 
-interface ClientIdentity {
+export interface ClientIdentity {
   userId: string;
   authToken: string;
+  isAuthenticated: boolean;
   displayName: string;
   avatar: AvatarConfig;
+  avatarUrl: string | null;
+  primaryIdentity: SocialIdentity | null;
+  linkedIdentities: SocialIdentity[];
   activityStatus: ActivityStatus;
   focusGoal: string | null;
   shareFocusGoal: boolean;
@@ -26,11 +33,182 @@ interface ClientIdentity {
   invisible: boolean;
 }
 
+export interface VisitorLeftEvent {
+  userId: string;
+  seatId: string | null;
+}
+
 type SnapshotListener = (snapshot: RoomSnapshot) => void;
 type ReactionListener = (reaction: ReactionEvent) => void;
 type ChatListener = (message: ChatMessage) => void;
+type VisitorLeftListener = (evt: VisitorLeftEvent) => void;
 type StatusListener = (status: ConnectionStatus) => void;
 type ErrorListener = (reason: string) => void;
+
+const ALLOWED_AVATAR_HOSTS = [
+  'avatars.githubusercontent.com',
+  'github.com',
+  'pbs.twimg.com',
+  'abs.twimg.com',
+  'unavatar.io',
+];
+
+export function validateSafeAvatarUrl(raw?: string | null): string | null {
+  if (!raw || typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed.length > 512) return null;
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== 'https:') return null;
+    if (parsed.username || parsed.password) return null;
+    const host = parsed.hostname.toLowerCase();
+    const isAllowed = ALLOWED_AVATAR_HOSTS.some(
+      (allowed) => host === allowed || host.endsWith(`.${allowed}`)
+    );
+    return isAllowed ? parsed.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+export function buildSafeProfileUrl(provider: SocialProvider, username: string): string {
+  const clean = username.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 39) || 'user';
+  return provider === 'github'
+    ? `https://github.com/${clean}`
+    : `https://x.com/${clean}`;
+}
+
+export function getApiBaseUrl(): string {
+  if (typeof window === 'undefined') return 'http://127.0.0.1:3001';
+  const host = window.location.hostname;
+  if (host === '127.0.0.1' || host === 'localhost') {
+    return 'http://127.0.0.1:3001';
+  }
+  return window.location.origin;
+}
+
+export interface AuthSessionResponse {
+  authenticated: boolean;
+  user?: CafeUser;
+  identities?: SocialIdentity[];
+  csrfToken?: string;
+  wsToken?: string;
+  sessionId?: string;
+}
+
+export async function fetchAuthSession(sessionId?: string): Promise<AuthSessionResponse | null> {
+  if (typeof window !== 'undefined' && window.location.hostname.endsWith('github.io')) {
+    return null;
+  }
+  try {
+    const headers: Record<string, string> = {};
+    if (sessionId) {
+      headers['Authorization'] = `Bearer ${sessionId}`;
+    }
+    const url = sessionId
+      ? `${getApiBaseUrl()}/api/auth/me?session_id=${encodeURIComponent(sessionId)}`
+      : `${getApiBaseUrl()}/api/auth/me`;
+    const res = await fetch(url, {
+      method: 'GET',
+      headers,
+      credentials: 'include',
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as AuthSessionResponse;
+  } catch {
+    return null;
+  }
+}
+
+export function buildServerOAuthStartUrl(params: {
+  provider: SocialProvider;
+  mode: 'login' | 'link';
+  returnTo: string;
+  sessionId?: string;
+  csrfToken?: string;
+  loginHint?: string;
+}): string {
+  const u = new URL(`${getApiBaseUrl()}/api/auth/oauth/${params.provider}/start`);
+  u.searchParams.set('mode', params.mode);
+  u.searchParams.set('return_to', params.returnTo);
+  if (params.sessionId) u.searchParams.set('session_id', params.sessionId);
+  if (params.csrfToken) u.searchParams.set('csrf_token', params.csrfToken);
+  if (params.loginHint) u.searchParams.set('login_hint', params.loginHint);
+  return u.toString();
+}
+
+/**
+ * Resolves real public GitHub or X user profile metadata using Web Crypto PKCE S256
+ * when running on static GitHub Pages where the local Rust server is not reachable.
+ */
+export async function resolvePublicSocialProfile(
+  provider: SocialProvider,
+  rawUsername: string,
+  customDisplayName?: string
+): Promise<{
+  provider: SocialProvider;
+  providerUserId: string;
+  username: string;
+  displayName: string;
+  avatarUrl: string | null;
+  profileUrl: string;
+  pkceChallenge: string;
+}> {
+  const username = rawUsername.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 39);
+  if (!username) {
+    throw new Error('Please enter a valid username.');
+  }
+
+  // Generate real Web Crypto PKCE S256 verifier & challenge
+  const verifierBytes = new Uint8Array(32);
+  window.crypto.getRandomValues(verifierBytes);
+  const verifier = Array.from(verifierBytes, (b) => b.toString(16).padStart(2, '0')).join('');
+  const digest = await window.crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(verifier)
+  );
+  const pkceChallenge = btoa(String.fromCharCode(...new Uint8Array(digest)))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+
+  let providerUserId = `${provider}_${username.toLowerCase()}`;
+  let displayName = (customDisplayName || '').trim() || username;
+  let avatarUrl: string | null =
+    provider === 'github'
+      ? `https://github.com/${username}.png?size=160`
+      : `https://unavatar.io/x/${username}`;
+
+  if (provider === 'github') {
+    try {
+      const resp = await fetch(`https://api.github.com/users/${encodeURIComponent(username)}`, {
+        headers: { Accept: 'application/vnd.github+json' },
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data.id) providerUserId = String(data.id);
+        if (!customDisplayName?.trim() && typeof data.name === 'string' && data.name.trim()) {
+          displayName = data.name.trim();
+        }
+        if (typeof data.avatar_url === 'string') {
+          avatarUrl = validateSafeAvatarUrl(data.avatar_url);
+        }
+      }
+    } catch {
+      // Fallback to github.com/{username}.png avatar URL
+    }
+  }
+
+  return {
+    provider,
+    providerUserId,
+    username,
+    displayName,
+    avatarUrl: validateSafeAvatarUrl(avatarUrl),
+    profileUrl: buildSafeProfileUrl(provider, username),
+    pkceChallenge,
+  };
+}
 
 export class CafeMultiplayerClient {
   private ws: WebSocket | null = null;
@@ -53,13 +231,18 @@ export class CafeMultiplayerClient {
   private snapshotListeners = new Set<SnapshotListener>();
   private reactionListeners = new Set<ReactionListener>();
   private chatListeners = new Set<ChatListener>();
+  private visitorLeftListeners = new Set<VisitorLeftListener>();
   private statusListeners = new Set<StatusListener>();
   private errorListeners = new Set<ErrorListener>();
 
-  public connect(roomId: CafeRoomId, identity: ClientIdentity, initialSeat: SeatId | null = null): void {
+  public connect(
+    roomId: CafeRoomId,
+    identity: ClientIdentity,
+    initialSeat: SeatId | null = null
+  ): void {
     this.roomId = roomId;
     this.identity = { ...identity };
-    this.currentSeatId = initialSeat;
+    this.currentSeatId = identity.isAuthenticated ? initialSeat : null;
 
     this.setupBroadcastMesh();
     this.connectWebSocket();
@@ -82,7 +265,6 @@ export class CafeMultiplayerClient {
 
   private connectWebSocket(): void {
     if (typeof window === 'undefined') return;
-    // If hosted on github.io static pages, immediately activate the local BroadcastChannel mesh
     if (window.location.hostname.endsWith('github.io')) {
       this.setStatus('connected-local-mesh');
       this.announceOnMesh();
@@ -101,7 +283,7 @@ export class CafeMultiplayerClient {
       ws.onopen = () => {
         this.setStatus('connected-server');
         this.sendJoinCommand();
-        if (this.currentSeatId) {
+        if (this.currentSeatId && this.identity?.isAuthenticated) {
           this.claimSeat(this.currentSeatId);
         }
       };
@@ -116,7 +298,6 @@ export class CafeMultiplayerClient {
       };
 
       ws.onerror = () => {
-        // Fallback to local multi-tab BroadcastChannel mesh seamlessly
         if (this.status !== 'connected-server') {
           this.setStatus('connected-local-mesh');
           this.announceOnMesh();
@@ -151,7 +332,7 @@ export class CafeMultiplayerClient {
 
       if (msg.type === 'peer-presence') {
         const peer = msg.presence as VisitorPresence;
-        if (peer.invisible) {
+        if (peer.invisible || !peer.isAuthenticated) {
           this.meshPeers.delete(peer.userId);
         } else {
           this.meshPeers.set(peer.userId, peer);
@@ -160,13 +341,17 @@ export class CafeMultiplayerClient {
         if (this.status === 'connected-local-mesh') {
           this.emitMeshSnapshot();
         }
-        if (msg.requestReply && this.identity) {
+        if (msg.requestReply && this.identity && this.identity.isAuthenticated) {
           this.announceOnMesh(false);
         }
       } else if (msg.type === 'peer-leave') {
+        const oldPeer = this.meshPeers.get(msg.userId);
         this.meshPeers.delete(msg.userId);
         this.rebuildMeshOccupancy();
         if (this.status === 'connected-local-mesh') {
+          this.visitorLeftListeners.forEach((cb) =>
+            cb({ userId: msg.userId, seatId: oldPeer?.seatId || null })
+          );
           this.emitMeshSnapshot();
         }
       } else if (msg.type === 'peer-reaction') {
@@ -200,11 +385,28 @@ export class CafeMultiplayerClient {
 
   private announceOnMesh(requestReply = true): void {
     if (!this.identity) return;
+    if (!this.identity.isAuthenticated || this.identity.invisible) {
+      const existed = this.meshPeers.has(this.identity.userId);
+      this.meshPeers.delete(this.identity.userId);
+      this.rebuildMeshOccupancy();
+      if (existed) {
+        this.channel?.postMessage({ type: 'peer-leave', userId: this.identity.userId });
+      }
+      if (this.status === 'connected-local-mesh') {
+        this.emitMeshSnapshot();
+      }
+      return;
+    }
+
     const selfPresence: VisitorPresence = {
       userId: this.identity.userId,
+      isAuthenticated: true,
       displayName: this.identity.displayName,
       avatar: this.identity.avatar,
-      seatId: this.identity.invisible ? null : this.currentSeatId,
+      avatarUrl: validateSafeAvatarUrl(this.identity.avatarUrl),
+      primaryIdentity: this.identity.primaryIdentity,
+      linkedIdentities: this.identity.linkedIdentities.filter((i) => i.isPublic !== false),
+      seatId: this.currentSeatId,
       activityStatus: this.identity.activityStatus,
       focusGoal: this.identity.shareFocusGoal ? this.identity.focusGoal : null,
       shareFocusGoal: this.identity.shareFocusGoal,
@@ -213,11 +415,7 @@ export class CafeMultiplayerClient {
       lastHeartbeatMs: Date.now(),
     };
 
-    if (this.identity.invisible) {
-      this.meshPeers.delete(this.identity.userId);
-    } else {
-      this.meshPeers.set(this.identity.userId, selfPresence);
-    }
+    this.meshPeers.set(this.identity.userId, selfPresence);
     this.rebuildMeshOccupancy();
 
     this.channel?.postMessage({
@@ -297,10 +495,19 @@ export class CafeMultiplayerClient {
         tableId: event.tableId as string,
         senderId: event.senderId as string,
         senderName: event.senderName as string,
+        senderAvatarUrl: event.senderAvatarUrl as string | null,
+        senderProvider: event.senderProvider as SocialProvider | null,
         text: event.text as string,
         timestampMs: event.timestampMs as number,
       };
       this.chatListeners.forEach((cb) => cb(msg));
+    } else if (type === 'visitorLeft') {
+      this.visitorLeftListeners.forEach((cb) =>
+        cb({
+          userId: event.userId as string,
+          seatId: (event.seatId as string | null) || null,
+        })
+      );
     } else if (type === 'error') {
       this.errorListeners.forEach((cb) => cb(String(event.reason || 'Action rejected')));
     }
@@ -324,17 +531,19 @@ export class CafeMultiplayerClient {
       displayName: this.identity.displayName,
       avatar: this.identity.avatar,
       activityStatus: this.identity.activityStatus,
-      invisible: this.identity.invisible,
+      invisible: !this.identity.isAuthenticated || this.identity.invisible,
     });
   }
 
   private sendHeartbeat(): void {
     if (!this.identity) return;
-    if (!this.sendWs({
-      type: 'heartbeat',
-      userId: this.identity.userId,
-      authToken: this.identity.authToken,
-    })) {
+    if (
+      !this.sendWs({
+        type: 'heartbeat',
+        userId: this.identity.userId,
+        authToken: this.identity.authToken,
+      })
+    ) {
       this.announceOnMesh(false);
     }
   }
@@ -350,37 +559,48 @@ export class CafeMultiplayerClient {
     this.meshSharedTimers = {};
     this.meshMessages = [];
     this.setupBroadcastMesh();
-    if (!this.sendWs({
-      type: 'joinRoom',
-      roomId: this.roomId,
-      userId: this.identity?.userId,
-      authToken: this.identity?.authToken,
-      displayName: this.identity?.displayName,
-      avatar: this.identity?.avatar,
-      activityStatus: this.identity?.activityStatus,
-      invisible: this.identity?.invisible,
-    })) {
+    if (
+      !this.sendWs({
+        type: 'joinRoom',
+        roomId: this.roomId,
+        userId: this.identity?.userId,
+        authToken: this.identity?.authToken,
+        displayName: this.identity?.displayName,
+        avatar: this.identity?.avatar,
+        activityStatus: this.identity?.activityStatus,
+        invisible: !this.identity?.isAuthenticated || this.identity?.invisible,
+      })
+    ) {
       this.announceOnMesh(true);
     }
   }
 
   public claimSeat(seatId: SeatId | null): boolean {
     if (!this.identity) return false;
-    // Check local mesh occupancy before claiming
+    if (seatId && !this.identity.isAuthenticated) {
+      this.errorListeners.forEach((cb) =>
+        cb('Sign in with GitHub or X to claim a persistent seat in the café.')
+      );
+      return false;
+    }
     if (seatId && this.status === 'connected-local-mesh') {
       const holder = this.meshSeatOccupancy[seatId];
       if (holder && holder !== this.identity.userId) {
-        this.errorListeners.forEach((cb) => cb('Seat is already occupied by another visitor'));
+        this.errorListeners.forEach((cb) =>
+          cb('Seat is already occupied by another visitor')
+        );
         return false;
       }
     }
     this.currentSeatId = seatId;
-    if (!this.sendWs({
-      type: 'claimSeat',
-      userId: this.identity.userId,
-      authToken: this.identity.authToken,
-      seatId,
-    })) {
+    if (
+      !this.sendWs({
+        type: 'claimSeat',
+        userId: this.identity.userId,
+        authToken: this.identity.authToken,
+        seatId,
+      })
+    ) {
       this.announceOnMesh(false);
     }
     return true;
@@ -388,32 +608,70 @@ export class CafeMultiplayerClient {
 
   public updateIdentity(next: Partial<ClientIdentity>): void {
     if (!this.identity) return;
+    const prevUserId = this.identity.userId;
+    const prevAuth = this.identity.isAuthenticated;
     this.identity = { ...this.identity, ...next };
-    if (!this.sendWs({
-      type: 'updateStatus',
-      userId: this.identity.userId,
-      authToken: this.identity.authToken,
-      displayName: this.identity.displayName,
-      avatar: this.identity.avatar,
-      activityStatus: this.identity.activityStatus,
-      focusGoal: this.identity.focusGoal,
-      shareFocusGoal: this.identity.shareFocusGoal,
-      focusStartedAtMs: this.identity.focusStartedAtMs,
-      invisible: this.identity.invisible,
-    })) {
+
+    // If user identity changed (e.g. just signed in or signed out), re-join room with new identity
+    if (
+      next.userId !== undefined &&
+      (next.userId !== prevUserId || next.isAuthenticated !== prevAuth)
+    ) {
+      if (prevUserId && prevUserId !== this.identity.userId) {
+        this.meshPeers.delete(prevUserId);
+        this.channel?.postMessage({ type: 'peer-leave', userId: prevUserId });
+      }
+      this.sendJoinCommand();
+      if (this.currentSeatId && this.identity.isAuthenticated) {
+        this.claimSeat(this.currentSeatId);
+      }
+      this.announceOnMesh(true);
+      return;
+    }
+
+    if (
+      !this.sendWs({
+        type: 'updateStatus',
+        userId: this.identity.userId,
+        authToken: this.identity.authToken,
+        displayName: this.identity.displayName,
+        avatar: this.identity.avatar,
+        activityStatus: this.identity.activityStatus,
+        focusGoal: this.identity.focusGoal,
+        shareFocusGoal: this.identity.shareFocusGoal,
+        focusStartedAtMs: this.identity.focusStartedAtMs,
+        invisible: !this.identity.isAuthenticated || this.identity.invisible,
+      })
+    ) {
       this.announceOnMesh(false);
     }
   }
 
-  public sendReaction(kind: ReactionKind, targetUserId: string | null = null): void {
+  public removeActivePresence(): void {
     if (!this.identity) return;
-    if (!this.sendWs({
-      type: 'sendReaction',
-      userId: this.identity.userId,
-      authToken: this.identity.authToken,
-      targetUserId,
-      kind,
-    })) {
+    const oldUserId = this.identity.userId;
+    const oldSeatId = this.currentSeatId;
+    this.currentSeatId = null;
+    this.meshPeers.delete(oldUserId);
+    this.rebuildMeshOccupancy();
+    this.channel?.postMessage({ type: 'peer-leave', userId: oldUserId });
+    this.visitorLeftListeners.forEach((cb) => cb({ userId: oldUserId, seatId: oldSeatId }));
+    if (this.status === 'connected-local-mesh') {
+      this.emitMeshSnapshot();
+    }
+  }
+
+  public sendReaction(kind: ReactionKind, targetUserId: string | null = null): void {
+    if (!this.identity || !this.identity.isAuthenticated) return;
+    if (
+      !this.sendWs({
+        type: 'sendReaction',
+        userId: this.identity.userId,
+        authToken: this.identity.authToken,
+        targetUserId,
+        kind,
+      })
+    ) {
       const rx: ReactionEvent = {
         id: `rx-${Date.now()}`,
         senderId: this.identity.userId,
@@ -428,22 +686,26 @@ export class CafeMultiplayerClient {
   }
 
   public sendChat(tableId: string, text: string): void {
-    if (!this.identity) return;
+    if (!this.identity || !this.identity.isAuthenticated) return;
     const trimmed = text.trim().slice(0, 280);
     if (!trimmed) return;
-    if (!this.sendWs({
-      type: 'sendChat',
-      userId: this.identity.userId,
-      authToken: this.identity.authToken,
-      tableId,
-      text: trimmed,
-    })) {
+    if (
+      !this.sendWs({
+        type: 'sendChat',
+        userId: this.identity.userId,
+        authToken: this.identity.authToken,
+        tableId,
+        text: trimmed,
+      })
+    ) {
       const msg: ChatMessage = {
         id: `msg-${Date.now()}`,
         roomId: this.roomId,
         tableId,
         senderId: this.identity.userId,
         senderName: this.identity.displayName,
+        senderAvatarUrl: this.identity.avatarUrl,
+        senderProvider: this.identity.primaryIdentity?.provider || null,
         text: trimmed,
         timestampMs: Date.now(),
       };
@@ -460,16 +722,18 @@ export class CafeMultiplayerClient {
     durationSec: number,
     sharedGoal: string
   ): void {
-    if (!this.identity) return;
-    if (!this.sendWs({
-      type: 'startSharedTimer',
-      userId: this.identity.userId,
-      authToken: this.identity.authToken,
-      tableId,
-      phase,
-      durationSec,
-      sharedGoal,
-    })) {
+    if (!this.identity || !this.identity.isAuthenticated) return;
+    if (
+      !this.sendWs({
+        type: 'startSharedTimer',
+        userId: this.identity.userId,
+        authToken: this.identity.authToken,
+        tableId,
+        phase,
+        durationSec,
+        sharedGoal,
+      })
+    ) {
       const timer: SharedTimerState = {
         tableId,
         phase,
@@ -487,13 +751,15 @@ export class CafeMultiplayerClient {
   }
 
   public joinSharedTimer(tableId: string): void {
-    if (!this.identity) return;
-    if (!this.sendWs({
-      type: 'joinSharedTimer',
-      userId: this.identity.userId,
-      authToken: this.identity.authToken,
-      tableId,
-    })) {
+    if (!this.identity || !this.identity.isAuthenticated) return;
+    if (
+      !this.sendWs({
+        type: 'joinSharedTimer',
+        userId: this.identity.userId,
+        authToken: this.identity.authToken,
+        tableId,
+      })
+    ) {
       const timer = this.meshSharedTimers[tableId];
       if (timer && !timer.participants.includes(this.identity.userId)) {
         timer.participants.push(this.identity.userId);
@@ -504,13 +770,15 @@ export class CafeMultiplayerClient {
   }
 
   public stopSharedTimer(tableId: string): void {
-    if (!this.identity) return;
-    if (!this.sendWs({
-      type: 'stopSharedTimer',
-      userId: this.identity.userId,
-      authToken: this.identity.authToken,
-      tableId,
-    })) {
+    if (!this.identity || !this.identity.isAuthenticated) return;
+    if (
+      !this.sendWs({
+        type: 'stopSharedTimer',
+        userId: this.identity.userId,
+        authToken: this.identity.authToken,
+        tableId,
+      })
+    ) {
       const timer = this.meshSharedTimers[tableId];
       if (timer) {
         timer.isRunning = false;
@@ -544,6 +812,11 @@ export class CafeMultiplayerClient {
   public onChat(cb: ChatListener): () => void {
     this.chatListeners.add(cb);
     return () => this.chatListeners.delete(cb);
+  }
+
+  public onVisitorLeft(cb: VisitorLeftListener): () => void {
+    this.visitorLeftListeners.add(cb);
+    return () => this.visitorLeftListeners.delete(cb);
   }
 
   public onStatus(cb: StatusListener): () => void {

@@ -26,6 +26,8 @@ import {
   VisitorPresence,
 } from '../../types';
 import { SEATS } from '../../utils/isometric';
+import { validateSafeAvatarUrl } from '../../network/multiplayerClient';
+import { ProviderIcon } from './VisitorProfileCardModal';
 
 interface SocialLoungeDrawerProps {
   isOpen: boolean;
@@ -315,15 +317,41 @@ export const SocialLoungeDrawer: React.FC<SocialLoungeDrawerProps> = ({
                   >
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex items-center gap-2.5 min-w-0">
-                        <div
-                          className="w-7 h-7 rounded-full border border-white/20 flex items-center justify-center text-xs font-bold shrink-0"
-                          style={{ backgroundColor: v.avatar.clothingColor }}
-                        >
-                          {v.displayName.slice(0, 1).toUpperCase()}
-                        </div>
+                        {(() => {
+                          const safeImg = validateSafeAvatarUrl(
+                            v.avatarUrl || v.primaryIdentity?.avatarUrl
+                          );
+                          return (
+                            <div
+                              className="w-8 h-8 rounded-full border border-[#F3B664]/50 flex items-center justify-center text-xs font-bold shrink-0 overflow-hidden"
+                              style={{ backgroundColor: v.avatar.clothingColor }}
+                            >
+                              {safeImg ? (
+                                <img
+                                  src={safeImg}
+                                  alt={v.displayName}
+                                  referrerPolicy="no-referrer"
+                                  crossOrigin="anonymous"
+                                  className="w-full h-full object-cover"
+                                />
+                              ) : (
+                                v.displayName.slice(0, 1).toUpperCase()
+                              )}
+                            </div>
+                          );
+                        })()}
                         <div className="min-w-0">
                           <div className="text-xs font-semibold text-[#F9EFE3] truncate flex items-center gap-1.5">
                             <span>{v.displayName}</span>
+                            {v.primaryIdentity && (
+                              <span className="inline-flex items-center gap-0.5 text-[10px] text-[#F3B664]">
+                                <ProviderIcon
+                                  provider={v.primaryIdentity.provider}
+                                  className="w-3 h-3"
+                                />
+                                @{v.primaryIdentity.username}
+                              </span>
+                            )}
                             {isSelf && (
                               <span className="text-[10px] px-1.5 py-0.2 rounded bg-[#68D391]/20 text-[#9AE6B4]">
                                 You

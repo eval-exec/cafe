@@ -31,6 +31,7 @@ interface InteriorSceneSVGProps {
   theme: CafeThemeConfig;
   selfUserId: string;
   visitors: VisitorPresence[];
+  leavingVisitors?: Record<string, VisitorPresence>;
   activeReactions: Record<string, ReactionEvent>;
   selectedSeatId: SeatId | null;
   hoveredSeatId: SeatId | null;
@@ -51,6 +52,7 @@ export const InteriorSceneSVG: React.FC<InteriorSceneSVGProps> = ({
   theme,
   selfUserId,
   visitors,
+  leavingVisitors = {},
   activeReactions,
   selectedSeatId,
   hoveredSeatId,
@@ -822,6 +824,7 @@ export const InteriorSceneSVG: React.FC<InteriorSceneSVGProps> = ({
                   y={seat.avatarScreenY - 12}
                   isSelf={occupant.userId === selfUserId}
                   isSeated={true}
+                  isUserFocusing={isTimerRunning}
                   activeReaction={activeReactions[occupant.userId] || null}
                   reducedMotion={reducedMotion}
                   onSelectVisitor={onSelectVisitor}
@@ -831,7 +834,7 @@ export const InteriorSceneSVG: React.FC<InteriorSceneSVGProps> = ({
           );
         })}
 
-        {/* ================= 7. STANDING VISITORS IN RECEPTION AREA ================= */}
+        {/* ================= 7. STANDING VISITORS & DEPARTING VISITORS ================= */}
         {standingVisitors.map((visitor, idx) => {
           const standIsoX = 8.4 - (idx % 3) * 0.65;
           const standIsoY = 8.9 - Math.floor(idx / 3) * 0.65;
@@ -844,9 +847,30 @@ export const InteriorSceneSVG: React.FC<InteriorSceneSVGProps> = ({
               y={pt.y}
               isSelf={visitor.userId === selfUserId}
               isSeated={false}
+              isUserFocusing={isTimerRunning}
               activeReaction={activeReactions[visitor.userId] || null}
               reducedMotion={reducedMotion}
               onSelectVisitor={onSelectVisitor}
+            />
+          );
+        })}
+        {Object.values(leavingVisitors).map((leavingVisitor) => {
+          const seatCfg = leavingVisitor.seatId
+            ? SEATS[leavingVisitor.seatId as SeatId]
+            : null;
+          const pt = seatCfg
+            ? { x: seatCfg.avatarScreenX, y: seatCfg.avatarScreenY - 12 }
+            : isoToScreen(8.4, 8.9, 0);
+          return (
+            <IsoAvatar
+              key={`leaving-${leavingVisitor.userId}`}
+              visitor={leavingVisitor}
+              x={pt.x}
+              y={pt.y}
+              isSelf={false}
+              isSeated={false}
+              isLeaving={true}
+              reducedMotion={reducedMotion}
             />
           );
         })}
