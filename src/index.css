@@ -1,0 +1,274 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    background-color: #181210;
+    color: #F4ECE1;
+    user-select: none;
+    overflow: hidden;
+  }
+}
+
+/* Rising Coffee Steam Wisps */
+@keyframes steamRise1 {
+  0% {
+    transform: translateY(0px) translateX(0px) scaleX(1);
+    opacity: 0;
+  }
+  30% {
+    opacity: 0.72;
+  }
+  70% {
+    opacity: 0.45;
+  }
+  100% {
+    transform: translateY(-12px) translateX(-2px) scaleX(1.15);
+    opacity: 0;
+  }
+}
+
+@keyframes steamRise2 {
+  0% {
+    transform: translateY(0px) translateX(0px) scaleX(1);
+    opacity: 0;
+  }
+  35% {
+    opacity: 0.65;
+  }
+  75% {
+    opacity: 0.35;
+  }
+  100% {
+    transform: translateY(-14px) translateX(2.5px) scaleX(1.1);
+    opacity: 0;
+  }
+}
+
+.steam-wisp-1 {
+  animation: steamRise1 3.4s ease-in-out infinite;
+}
+
+.steam-wisp-2 {
+  animation: steamRise2 3.9s ease-in-out infinite 1.1s;
+}
+
+.steam-wisp-3 {
+  animation: steamRise1 4.2s ease-in-out infinite 2.1s;
+}
+
+/* Gentle Botanical Plant & Tree Sway */
+@keyframes gentleSway {
+  0%, 100% {
+    transform: rotate(0deg);
+  }
+  50% {
+    transform: rotate(1.8deg);
+  }
+}
+
+.plant-sway {
+  transform-box: fill-box;
+  transform-origin: center bottom;
+  animation: gentleSway 6.5s ease-in-out infinite;
+}
+
+.tree-sway {
+  transform-box: fill-box;
+  transform-origin: center bottom;
+  animation: gentleSway 8.5s ease-in-out infinite;
+}
+
+/* Wrought-Iron Hanging Blade Sign Swing */
+@keyframes signSwing {
+  0%, 100% {
+    transform: rotate(-1.2deg);
+  }
+  50% {
+    transform: rotate(1.4deg);
+  }
+}
+
+.sign-swing {
+  transform-box: fill-box;
+  transform-origin: center top;
+  animation: signSwing 5.5s ease-in-out infinite;
+}
+
+/* Warm Lamp Halo Breathing */
+@keyframes lampBreathe {
+  0%, 100% {
+    opacity: 0.38;
+  }
+  50% {
+    opacity: 0.48;
+  }
+}
+
+.lamp-breathe {
+  animation: lampBreathe 4.5s ease-in-out infinite;
+}
+
+/* Sleeping Café Cat Gentle Breathing */
+@keyframes catBreathe {
+  0%, 100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.035);
+  }
+}
+
+.cat-breathe {
+  transform-box: fill-box;
+  transform-origin: center center;
+  animation: catBreathe 4.2s ease-in-out infinite;
+}
+
+/* Hearth Fireplace Flame Flicker */
+@keyframes flameFlicker {
+  0%, 100% {
+    transform: scaleY(1) skewX(0deg);
+  }
+  25% {
+    transform: scaleY(1.07) skewX(-2deg);
+  }
+  50% {
+    transform: scaleY(0.95) skewX(2deg);
+  }
+  75% {
+    transform: scaleY(1.04) skewX(-1deg);
+  }
+}
+
+.flame-flicker {
+  transform-box: fill-box;
+  transform-origin: center bottom;
+  animation: flameFlicker 2.2s ease-in-out infinite;
+}
+
+/* Cloud Drift */
+@keyframes cloudDrift {
+  0%, 100% {
+    transform: translateX(0px);
+  }
+  50% {
+    transform: translateX(28px);
+  }
+}
+
+.cloud-drift-slow {
+  animation: cloudDrift 28s ease-in-out infinite;
+}
+
+/* Falling Golden Autumn Leaves */
+@keyframes leafFall1 {
+  0% {
+    transform: translate(0px, -20px) rotate(0deg);
+    opacity: 0;
+  }
+  15% {
+    opacity: 0.85;
+  }
+  85% {
+    opacity: 0.85;
+  }
+  100% {
+    transform: translate(65px, 290px) rotate(140deg);
+    opacity: 0;
+  }
+}
+
+@keyframes leafFall2 {
+  0% {
+    transform: translate(0px, -10px) rotate(15deg);
+    opacity: 0;
+  }
+  15% {
+    opacity: 0.8;
+  }
+  85% {
+    opacity: 0.8;
+  }
+  100% {
+    transform: translate(-55px, 310px) rotate(-120deg);
+    opacity: 0;
+  }
+}
+
+.falling-leaf-1 {
+  animation: leafFall1 11s ease-in-out infinite;
+}
+
+.falling-leaf-2 {
+  animation: leafFall2 13.5s ease-in-out infinite 3s;
+}
+
+.falling-leaf-3 {
+  animation: leafFall1 12.5s ease-in-out infinite 6.5s;
+}
+
+/* Rain Streak Animation */
+@keyframes rainDrop {
+  0% {
+    transform: translate(0px, -18px);
+    opacity: 0;
+  }
+  30% {
+    opacity: 0.65;
+  }
+  100% {
+    transform: translate(-8px, 26px);
+    opacity: 0;
+  }
+}
+
+.rain-streak {
+  animation: rainDrop 1.2s linear infinite;
+}
+
+/* Fade In Popover */
+@keyframes fadeInPop {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.animate-fade-in {
+  animation: fadeInPop 200ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Respect Reduced Motion OS Preference */
+@media (prefers-reduced-motion: reduce) {
+  .steam-wisp-1,
+  .steam-wisp-2,
+  .steam-wisp-3,
+  .plant-sway,
+  .tree-sway,
+  .sign-swing,
+  .lamp-breathe,
+  .cat-breathe,
+  .flame-flicker,
+  .cloud-drift-slow,
+  .falling-leaf-1,
+  .falling-leaf-2,
+  .falling-leaf-3,
+  .rain-streak {
+    animation: none !important;
+  }
+}
