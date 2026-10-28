@@ -31,7 +31,7 @@ class CafeSoundEngine {
     },
     ambientEnabled: {
       cafe: true,
-      rain: false,
+      rain: true,
       fire: false,
     },
     sfxEnabled: true,

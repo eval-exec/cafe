@@ -37,7 +37,7 @@ import {
 } from './types';
 import { SEAT_LIST, SEATS } from './utils/isometric';
 
-const AUDIO_STORAGE_KEY = 'atelier_ambre_audio_v1';
+const AUDIO_STORAGE_KEY = 'eval_exec_cafe_audio_v2';
 const FOCUS_STORAGE_KEY = 'atelier_ambre_focus_v1';
 
 const DEFAULT_AUDIO_PREFS: AudioPreferences = {
@@ -55,7 +55,7 @@ const DEFAULT_AUDIO_PREFS: AudioPreferences = {
   },
   ambientEnabled: {
     cafe: true,
-    rain: false,
+    rain: true,
     fire: false,
   },
   sfxEnabled: true,
