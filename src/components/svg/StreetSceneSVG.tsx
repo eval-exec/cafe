@@ -23,8 +23,9 @@ export const StreetSceneSVG: React.FC<StreetSceneSVGProps> = ({
     onEnterCafe();
   };
 
-  // Sky palette adapts to Afternoon, Dusk, or Night
+  // Sky palette adapts to Morning, Afternoon, Dusk, or Night
   const skyColors = {
+    morning: { top: '#3B5C7A', mid: '#8CA6B8', bottom: '#F5D0A9' },
     afternoon: { top: '#2E3B4E', mid: '#785A56', bottom: '#D99B66' },
     dusk: { top: '#181D2E', mid: '#3A2E47', bottom: '#8F5849' },
     night: { top: '#0D111C', mid: '#181E2E', bottom: '#2B2838' },
@@ -98,7 +99,7 @@ export const StreetSceneSVG: React.FC<StreetSceneSVGProps> = ({
         <rect x="0" y="0" width="1600" height="720" fill="url(#streetSkyGrad)" />
 
         {/* Subtle Twinkling Stars at Dusk / Night */}
-        {timeOfDay !== 'afternoon' && (
+        {(timeOfDay === 'dusk' || timeOfDay === 'night') && (
           <g opacity={timeOfDay === 'night' ? 0.85 : 0.45}>
             {[
               [180, 90, 1.5],
@@ -116,9 +117,15 @@ export const StreetSceneSVG: React.FC<StreetSceneSVGProps> = ({
           </g>
         )}
 
-        {/* Warm Setting Sun / Crescent Moon */}
-        {timeOfDay === 'afternoon' ? (
-          <circle cx="240" cy="185" r="56" fill="#FFDFA8" opacity="0.32" />
+        {/* Warm Sun / Crescent Moon */}
+        {timeOfDay === 'morning' || timeOfDay === 'afternoon' ? (
+          <circle
+            cx={timeOfDay === 'morning' ? '1320' : '240'}
+            cy={timeOfDay === 'morning' ? '150' : '185'}
+            r="56"
+            fill={timeOfDay === 'morning' ? '#FFF1C9' : '#FFDFA8'}
+            opacity="0.38"
+          />
         ) : (
           <g transform="translate(235, 130)">
             <circle cx="0" cy="0" r="24" fill="#FFF4D2" opacity="0.88" />
@@ -766,7 +773,27 @@ export const StreetSceneSVG: React.FC<StreetSceneSVGProps> = ({
           <circle cx="0" cy="-369" r="4" fill="#D49A4E" />
         </g>
 
-        {/* ================= 9. ENVIRONMENTAL FALLING LEAVES & RAIN ================= */}
+        {/* ================= 9. ENVIRONMENTAL STROLLING PASSERBY, FALLING LEAVES & RAIN ================= */}
+        {/* Peaceful Strolling Passerby with Satchel & Takeaway Coffee Cup on the Cobblestone Sidewalk */}
+        <g
+          transform="translate(1310, 775)"
+          className={!reducedMotion ? 'cloud-drift-slow pointer-events-none' : 'pointer-events-none'}
+        >
+          <ellipse cx="0" cy="22" rx="14" ry="5" fill="rgba(10, 6, 4, 0.42)" />
+          {/* Legs */}
+          <line x1="-3" y1="4" x2="-6" y2="20" stroke="#283140" strokeWidth="3.5" strokeLinecap="round" />
+          <line x1="3" y1="4" x2="6" y2="20" stroke="#283140" strokeWidth="3.5" strokeLinecap="round" />
+          {/* Trench Coat / Jacket */}
+          <path d="M -9,6 C -10,-12 10,-12 9,6 Z" fill="#8C583A" stroke="#3B2314" strokeWidth="0.9" />
+          {/* Scarf */}
+          <path d="M -6,-9 Q 0,-6 6,-9" fill="none" stroke="#D96B43" strokeWidth="3" strokeLinecap="round" />
+          {/* Head & Beret */}
+          <circle cx="0" cy="-16" r="6.5" fill="#F2C6A0" stroke="#4A2E1B" strokeWidth="0.8" />
+          <ellipse cx="1" cy="-21" rx="7.5" ry="3" fill="#3B2314" />
+          {/* Takeaway coffee cup in hand */}
+          <rect x="-13" y="-4" width="4.5" height="6" rx="1" fill="#F7EFE6" stroke="#8C6239" strokeWidth="0.6" />
+        </g>
+
         {!reducedMotion && (
           <g className="pointer-events-none">
             {[

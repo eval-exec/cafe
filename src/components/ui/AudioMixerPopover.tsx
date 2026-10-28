@@ -3,6 +3,7 @@ import {
   CloudRain,
   Coffee,
   Flame,
+  Keyboard,
   Music,
   Pause,
   Play,
@@ -51,6 +52,12 @@ const AMBIENT_LAYERS: Array<{
     sub: 'Crackling hearth embers & warmth',
     icon: <Flame className="w-4 h-4 text-[#E87A48]" />,
   },
+  {
+    id: 'keyboard',
+    label: 'Keyboard Typing',
+    sub: 'Gentle tactile study keystrokes',
+    icon: <Keyboard className="w-4 h-4 text-[#A3E8BE]" />,
+  },
 ];
 
 export const AudioMixerPopover: React.FC<AudioMixerPopoverProps> = ({
@@ -71,7 +78,7 @@ export const AudioMixerPopover: React.FC<AudioMixerPopoverProps> = ({
   };
 
   const applyPreset = (
-    preset: 'cafe' | 'jazz' | 'lofi' | 'piano' | 'rain' | 'fire' | 'quiet'
+    preset: 'cafe' | 'jazz' | 'lofi' | 'piano' | 'rain' | 'fire' | 'coding' | 'quiet'
   ) => {
     if (preset === 'quiet') {
       onChange({
@@ -91,26 +98,30 @@ export const AudioMixerPopover: React.FC<AudioMixerPopoverProps> = ({
 
     if (preset === 'cafe') {
       next.musicStyle = 'none';
-      next.ambientEnabled = { cafe: true, rain: false, fire: false };
+      next.ambientEnabled = { cafe: true, rain: false, fire: false, keyboard: false };
       next.ambientVolumes = { ...next.ambientVolumes, cafe: 0.65 };
     } else if (preset === 'jazz') {
       next.musicStyle = 'jazz';
       next.musicVolume = 0.6;
-      next.ambientEnabled = { cafe: true, rain: false, fire: false };
+      next.ambientEnabled = { cafe: true, rain: false, fire: false, keyboard: false };
     } else if (preset === 'lofi') {
       next.musicStyle = 'lofi';
       next.musicVolume = 0.6;
-      next.ambientEnabled = { cafe: true, rain: true, fire: false };
+      next.ambientEnabled = { cafe: true, rain: true, fire: false, keyboard: false };
     } else if (preset === 'piano') {
       next.musicStyle = 'piano';
       next.musicVolume = 0.62;
-      next.ambientEnabled = { cafe: false, rain: true, fire: true };
+      next.ambientEnabled = { cafe: false, rain: true, fire: true, keyboard: false };
     } else if (preset === 'rain') {
       next.ambientEnabled = { ...next.ambientEnabled, rain: true };
       next.ambientVolumes = { ...next.ambientVolumes, rain: 0.65 };
     } else if (preset === 'fire') {
       next.ambientEnabled = { ...next.ambientEnabled, fire: true };
       next.ambientVolumes = { ...next.ambientVolumes, fire: 0.65 };
+    } else if (preset === 'coding') {
+      next.musicStyle = 'lofi';
+      next.ambientEnabled = { cafe: true, rain: true, fire: false, keyboard: true };
+      next.ambientVolumes = { ...next.ambientVolumes, keyboard: 0.45 };
     }
 
     onChange(next);
@@ -118,7 +129,7 @@ export const AudioMixerPopover: React.FC<AudioMixerPopoverProps> = ({
 
   return (
     <div
-      className="fixed bottom-20 left-4 sm:left-6 z-40 w-[340px] sm:w-[380px] rounded-2xl bg-[#1A130F]/95 backdrop-blur-xl border border-[#D48C46]/30 shadow-2xl p-4 text-[#F4ECE1] animate-fade-in"
+      className="fixed bottom-20 left-4 sm:left-6 z-40 w-[345px] sm:w-[395px] max-h-[80vh] overflow-y-auto no-scrollbar rounded-2xl bg-[#1A130F]/95 backdrop-blur-xl border border-[#D48C46]/30 shadow-2xl p-4 text-[#F4ECE1] animate-fade-in"
       onClick={(e) => e.stopPropagation()}
     >
       {/* Header */}
@@ -132,7 +143,7 @@ export const AudioMixerPopover: React.FC<AudioMixerPopoverProps> = ({
               Café Soundscape Mixer
             </h3>
             <p className="text-[11px] text-[#C8B6A6]">
-              Blend background music with room ambience
+              Independent personal audio • Mix layers freely
             </p>
           </div>
         </div>
@@ -165,7 +176,7 @@ export const AudioMixerPopover: React.FC<AudioMixerPopoverProps> = ({
       </div>
 
       {/* Master Playback & Volume Row */}
-      <div className="flex items-center gap-3 mb-4 bg-[#251B16] p-2.5 rounded-xl border border-[#D48C46]/15">
+      <div className="flex items-center gap-3 mb-3.5 bg-[#251B16] p-2.5 rounded-xl border border-[#D48C46]/15">
         <button
           onClick={togglePlay}
           className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
@@ -223,8 +234,8 @@ export const AudioMixerPopover: React.FC<AudioMixerPopoverProps> = ({
         </div>
       </div>
 
-      {/* 1-Click Soundscape Presets (All 7 Requested Modes) */}
-      <div className="mb-4">
+      {/* 1-Click Soundscape Presets */}
+      <div className="mb-3.5">
         <div className="flex items-center justify-between mb-1.5">
           <span className="text-[11px] font-semibold uppercase tracking-wider text-[#C8B6A6] flex items-center gap-1">
             <Sparkles className="w-3 h-3 text-[#F3B664]" /> Instant Soundscapes
@@ -235,43 +246,38 @@ export const AudioMixerPopover: React.FC<AudioMixerPopoverProps> = ({
             { id: 'lofi', label: 'Lo-Fi Study' },
             { id: 'jazz', label: 'Soft Jazz' },
             { id: 'piano', label: 'Gentle Piano' },
+            { id: 'coding', label: 'Coding + Keys' },
             { id: 'cafe', label: 'Cozy Café' },
             { id: 'rain', label: 'Rainy Window' },
             { id: 'fire', label: 'Fireplace' },
             { id: 'quiet', label: 'Quiet Mode' },
-          ].map((p) => {
-            const isActive =
-              (p.id === 'quiet' && prefs.quietMode) ||
-              (!prefs.quietMode &&
-                prefs.isPlaying &&
-                ((p.id === 'lofi' && prefs.musicStyle === 'lofi') ||
-                  (p.id === 'jazz' && prefs.musicStyle === 'jazz') ||
-                  (p.id === 'piano' && prefs.musicStyle === 'piano') ||
-                  (p.id === 'cafe' && prefs.musicStyle === 'none' && prefs.ambientEnabled.cafe)));
-            return (
-              <button
-                key={p.id}
-                onClick={() =>
-                  applyPreset(
-                    p.id as 'cafe' | 'jazz' | 'lofi' | 'piano' | 'rain' | 'fire' | 'quiet'
-                  )
-                }
-                className={`px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all border ${
-                  isActive
-                    ? 'bg-[#D48C46]/25 border-[#F3B664] text-[#FFE4B5]'
-                    : 'bg-[#241A15] border-white/10 text-[#C8B6A6] hover:text-[#F4ECE1] hover:border-[#D48C46]/40'
-                }`}
-              >
-                {p.label}
-              </button>
-            );
-          })}
+          ].map((p) => (
+            <button
+              key={p.id}
+              onClick={() =>
+                applyPreset(
+                  p.id as
+                    | 'cafe'
+                    | 'jazz'
+                    | 'lofi'
+                    | 'piano'
+                    | 'rain'
+                    | 'fire'
+                    | 'coding'
+                    | 'quiet'
+                )
+              }
+              className="px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all border bg-[#241A15] border-white/10 text-[#C8B6A6] hover:text-[#F4ECE1] hover:border-[#D48C46]/40"
+            >
+              {p.label}
+            </button>
+          ))}
         </div>
       </div>
 
       {/* Background Music Style Selection */}
-      <div className="mb-4">
-        <div className="flex items-center justify-between mb-2">
+      <div className="mb-3.5">
+        <div className="flex items-center justify-between mb-1.5">
           <span className="text-[11px] font-semibold uppercase tracking-wider text-[#C8B6A6]">
             Background Music
           </span>
@@ -319,24 +325,24 @@ export const AudioMixerPopover: React.FC<AudioMixerPopoverProps> = ({
         </div>
       </div>
 
-      {/* Mixable Ambient Layers */}
-      <div className="space-y-2.5">
+      {/* Mixable Ambient Layers (Cafe, Rain, Fireplace, Keyboard Typing) */}
+      <div className="space-y-2">
         <span className="text-[11px] font-semibold uppercase tracking-wider text-[#C8B6A6] block">
-          Mix Ambient Layers
+          Mix Independent Ambient Layers
         </span>
         {AMBIENT_LAYERS.map((layer) => {
           const enabled = prefs.ambientEnabled[layer.id];
-          const volume = prefs.ambientVolumes[layer.id];
+          const volume = prefs.ambientVolumes[layer.id] ?? 0.35;
           return (
             <div
               key={layer.id}
-              className={`p-2.5 rounded-xl border transition-all ${
+              className={`p-2 rounded-xl border transition-all ${
                 enabled && !prefs.quietMode
                   ? 'bg-[#281D17] border-[#D48C46]/40'
                   : 'bg-[#201712]/60 border-white/5 opacity-80'
               }`}
             >
-              <div className="flex items-center justify-between mb-1.5">
+              <div className="flex items-center justify-between mb-1">
                 <button
                   onClick={() =>
                     onChange({

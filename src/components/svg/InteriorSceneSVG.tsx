@@ -1,5 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { SeatConfig, SeatId, TimeOfDay } from '../../types';
+import {
+  CafeThemeConfig,
+  ReactionEvent,
+  SeatConfig,
+  SeatId,
+  TimeOfDay,
+  VisitorPresence,
+} from '../../types';
 import {
   DEFAULT_INTERIOR_VIEWBOX,
   isoBoxFaces,
@@ -10,14 +17,21 @@ import {
 } from '../../utils/isometric';
 import {
   IsoBookshelfUnit,
+  IsoCommunalTableBase,
   IsoEspressoCounter,
   IsoHangingLamp,
   IsoPlant,
   IsoSeatStation,
+  IsoSocialLoungeCornerBase,
 } from './CafeFurniture';
+import { IsoAvatar } from './IsoAvatar';
 import { SeatedWorkspaceItems } from './SeatedWorkspaceProps';
 
 interface InteriorSceneSVGProps {
+  theme: CafeThemeConfig;
+  selfUserId: string;
+  visitors: VisitorPresence[];
+  activeReactions: Record<string, ReactionEvent>;
   selectedSeatId: SeatId | null;
   hoveredSeatId: SeatId | null;
   timeOfDay: TimeOfDay;
@@ -26,12 +40,18 @@ interface InteriorSceneSVGProps {
   isTimerRunning: boolean;
   currentGoal: string;
   reducedMotion: boolean;
+  skipAnimations: boolean;
   onSelectSeat: (seatId: SeatId) => void;
   onHoverSeat: (seatId: SeatId | null) => void;
+  onSelectVisitor: (visitor: VisitorPresence) => void;
   onSipCoffee: () => void;
 }
 
 export const InteriorSceneSVG: React.FC<InteriorSceneSVGProps> = ({
+  theme,
+  selfUserId,
+  visitors,
+  activeReactions,
   selectedSeatId,
   hoveredSeatId,
   timeOfDay,
@@ -40,12 +60,24 @@ export const InteriorSceneSVG: React.FC<InteriorSceneSVGProps> = ({
   isTimerRunning,
   currentGoal,
   reducedMotion,
+  skipAnimations,
   onSelectSeat,
   onHoverSeat,
+  onSelectVisitor,
   onSipCoffee,
 }) => {
-  const [viewBox, setViewBox] = useState<[number, number, number, number]>(DEFAULT_INTERIOR_VIEWBOX);
-  const currentViewBoxRef = useRef<[number, number, number, number]>(DEFAULT_INTERIOR_VIEWBOX);
+  const initialViewBox: [number, number, number, number] = selectedSeatId
+    ? SEATS[selectedSeatId].cameraViewBox
+    : DEFAULT_INTERIOR_VIEWBOX;
+
+  const [viewBox, setViewBox] = useState<[number, number, number, number]>(
+    initialViewBox
+  );
+  const currentViewBoxRef = useRef<[number, number, number, number]>(
+    initialViewBox
+  );
+
+  const shouldSkipAnim = reducedMotion || skipAnimations;
 
   // Smoothly animate SVG camera viewBox when selecting a seat or standing up
   useEffect(() => {
@@ -53,21 +85,25 @@ export const InteriorSceneSVG: React.FC<InteriorSceneSVGProps> = ({
       ? SEATS[selectedSeatId].cameraViewBox
       : DEFAULT_INTERIOR_VIEWBOX;
 
-    if (reducedMotion) {
+    if (shouldSkipAnim) {
       currentViewBoxRef.current = target;
       setViewBox(target);
       return;
     }
 
-    const start = [...currentViewBoxRef.current] as [number, number, number, number];
+    const start = [...currentViewBoxRef.current] as [
+      number,
+      number,
+      number,
+      number,
+    ];
     const startTime = performance.now();
-    const duration = 820;
+    const duration = 760;
     let frameId: number;
 
     const animateCamera = (now: number) => {
       const elapsed = now - startTime;
       const t = Math.min(1, elapsed / duration);
-      // Smooth quintic ease-out
       const ease = 1 - Math.pow(1 - t, 4);
 
       const next: [number, number, number, number] = [
@@ -87,96 +123,108 @@ export const InteriorSceneSVG: React.FC<InteriorSceneSVGProps> = ({
 
     frameId = requestAnimationFrame(animateCamera);
     return () => cancelAnimationFrame(frameId);
-  }, [selectedSeatId, reducedMotion]);
+  }, [selectedSeatId, shouldSkipAnim]);
 
-  // Sort the 6 seats by isometric depth (isoX + isoY) so foreground tables naturally overlap background ones
+  // Sort the 12 seats by isometric depth (isoX + isoY)
   const sortedSeats: SeatConfig[] = [...SEAT_LIST].sort(
     (a, b) => a.isoX + a.isoY - (b.isoX + b.isoY)
   );
 
-  // Wall heights & floor dimensions
+  // Build map of seatId -> VisitorPresence
+  const seatOccupants = new Map<SeatId, VisitorPresence>();
+  const standingVisitors: VisitorPresence[] = [];
+
+  visitors.forEach((v) => {
+    if (v.seatId && SEATS[v.seatId as SeatId]) {
+      seatOccupants.set(v.seatId as SeatId, v);
+    } else {
+      standingVisitors.push(v);
+    }
+  });
+
   const ROOM_SIZE = 10;
   const WALL_H = 3.65;
 
-  // Sunbeam opacity adapts to TimeOfDay
   const sunbeamOpacity =
-    timeOfDay === 'afternoon' ? 0.24 : timeOfDay === 'dusk' ? 0.14 : 0.06;
+    timeOfDay === 'morning'
+      ? 0.28
+      : timeOfDay === 'afternoon'
+      ? 0.24
+      : timeOfDay === 'dusk'
+      ? 0.14
+      : 0.05;
 
-  // Window sky tint outside the arched windows
   const windowSkyFill =
-    timeOfDay === 'afternoon'
+    timeOfDay === 'morning'
+      ? '#F5D6A7'
+      : timeOfDay === 'afternoon'
       ? '#E8B87D'
       : timeOfDay === 'dusk'
       ? '#4A3B59'
       : '#171D2E';
 
+  // Zone label positions
+  const quietZoneLabelPos = isoToScreen(1.8, 1.5, 0.03);
+  const sharedZoneLabelPos = isoToScreen(5.2, 6.65, 0.03);
+  const loungeZoneLabelPos = isoToScreen(8.35, 7.15, 0.03);
+
   return (
     <div className="relative w-full h-full overflow-hidden select-none">
       <svg
-        viewBox={`${viewBox[0].toFixed(1)} ${viewBox[1].toFixed(1)} ${viewBox[2].toFixed(1)} ${viewBox[3].toFixed(1)}`}
+        viewBox={`${viewBox[0].toFixed(1)} ${viewBox[1].toFixed(1)} ${viewBox[2].toFixed(
+          1
+        )} ${viewBox[3].toFixed(1)}`}
         preserveAspectRatio="xMidYMid meet"
         className="w-full h-full block"
         role="img"
-        aria-label="Isometric Interior of Eval Exec's Cafe — Choose any of the 6 seats to sit down and study"
+        aria-label={`Isometric Interior of ${theme.name} — 3 Social Zones & 12 Interactive Seats`}
       >
         <defs>
-          {/* Ambient Background Vignette */}
           <radialGradient id="interiorBgGrad" cx="50%" cy="48%" r="65%">
             <stop offset="0%" stopColor="#2D201A" />
             <stop offset="65%" stopColor="#1B130F" />
             <stop offset="100%" stopColor="#120D0A" />
           </radialGradient>
 
-          {/* Honey-Oak Floor Surface Gradient */}
           <linearGradient id="oakFloorGrad" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%" stopColor="#B87A44" />
-            <stop offset="50%" stopColor="#A36836" />
-            <stop offset="100%" stopColor="#855127" />
+            <stop offset="0%" stopColor={theme.floorPrimary} />
+            <stop offset="100%" stopColor={theme.floorSecondary} />
           </linearGradient>
 
-          {/* Back-Left (NW) Warm Plaster Wall Gradient */}
           <linearGradient id="nwWallGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#E6CFB2" />
-            <stop offset="65%" stopColor="#D4B796" />
-            <stop offset="100%" stopColor="#BA9A77" />
+            <stop offset="0%" stopColor={theme.wallPrimary} />
+            <stop offset="100%" stopColor={theme.wallSecondary} />
           </linearGradient>
 
-          {/* Back-Right (NE) Shaded Plaster Wall Gradient */}
           <linearGradient id="neWallGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#D1B595" />
-            <stop offset="65%" stopColor="#BE9E7C" />
-            <stop offset="100%" stopColor="#A68665" />
+            <stop offset="0%" stopColor={theme.wallSecondary} />
+            <stop offset="100%" stopColor={theme.wallPrimary} />
           </linearGradient>
 
-          {/* Slanted Window Sunbeam Gradient */}
           <linearGradient id="sunbeamGrad" x1="0" y1="0" x2="1" y2="1">
             <stop offset="0%" stopColor="#FFF0C4" stopOpacity="0.85" />
             <stop offset="55%" stopColor="#F5BD6E" stopOpacity="0.35" />
             <stop offset="100%" stopColor="#F5BD6E" stopOpacity="0" />
           </linearGradient>
 
-          {/* Hanging Pendant Light Cone Gradient */}
           <linearGradient id="pendantConeGradient" x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%" stopColor="#FFF3CC" stopOpacity="0.7" />
             <stop offset="60%" stopColor="#F3B664" stopOpacity="0.2" />
             <stop offset="100%" stopColor="#F3B664" stopOpacity="0" />
           </linearGradient>
 
-          {/* Warm Radial Lamp Halo */}
           <radialGradient id="warmLampHalo" cx="50%" cy="50%" r="50%">
             <stop offset="0%" stopColor="#FFF5D6" stopOpacity="0.95" />
             <stop offset="45%" stopColor="#F5B056" stopOpacity="0.45" />
             <stop offset="100%" stopColor="#F5B056" stopOpacity="0" />
           </radialGradient>
 
-          {/* Laptop Screen Surface Glow */}
           <radialGradient id="laptopScreenGlow" cx="50%" cy="50%" r="50%">
             <stop offset="0%" stopColor="#FFEAC2" stopOpacity="0.65" />
             <stop offset="60%" stopColor="#E5A253" stopOpacity="0.22" />
             <stop offset="100%" stopColor="#E5A253" stopOpacity="0" />
           </radialGradient>
 
-          {/* Hearth Fireplace Glow */}
           <radialGradient id="fireplaceFloorGlow" cx="50%" cy="50%" r="50%">
             <stop offset="0%" stopColor="#FF9442" stopOpacity="0.55" />
             <stop offset="55%" stopColor="#D95B26" stopOpacity="0.2" />
@@ -184,11 +232,9 @@ export const InteriorSceneSVG: React.FC<InteriorSceneSVGProps> = ({
           </radialGradient>
         </defs>
 
-        {/* Background Canvas Fill */}
         <rect x="-200" y="-200" width="2000" height="1400" fill="url(#interiorBgGrad)" />
 
         {/* ================= 1. ISOMETRIC ARCHITECTURAL BASE & FLOOR SLAB ================= */}
-        {/* Deep Soft Drop Shadow Underneath the Entire Isometric Café Diorama */}
         <polygon
           points={isoPolygon([
             [-0.4, -0.4, -0.35],
@@ -199,7 +245,7 @@ export const InteriorSceneSVG: React.FC<InteriorSceneSVGProps> = ({
           fill="rgba(6, 4, 3, 0.72)"
         />
 
-        {/* Exterior Cobblestone Sidewalk Apron Along the Front-Left (SW) Window & Entrance Wall */}
+        {/* Exterior Cobblestone Sidewalk Apron */}
         <polygon
           points={isoPolygon([
             [0, ROOM_SIZE, -0.05],
@@ -211,7 +257,6 @@ export const InteriorSceneSVG: React.FC<InteriorSceneSVGProps> = ({
           stroke="#241E1C"
           strokeWidth="1.2"
         />
-        {/* Sidewalk stone joint lines */}
         {[1.5, 3, 4.5, 6, 7.5, 9].map((sx) => {
           const p1 = isoToScreen(sx, ROOM_SIZE, -0.05);
           const p2 = isoToScreen(sx, ROOM_SIZE + 1.15, -0.05);
@@ -228,7 +273,7 @@ export const InteriorSceneSVG: React.FC<InteriorSceneSVGProps> = ({
           );
         })}
 
-        {/* Main Honey-Oak Interior Floor Surface (0..10 x 0..10) */}
+        {/* Main Honey-Oak Interior Floor Surface */}
         <polygon
           points={isoPolygon([
             [0, 0, 0],
@@ -241,7 +286,7 @@ export const InteriorSceneSVG: React.FC<InteriorSceneSVGProps> = ({
           strokeWidth="1.5"
         />
 
-        {/* Isometric Wooden Floor Plank Grid Lines (Warm Herringbone / Plank seams) */}
+        {/* Wooden Floor Plank Seams */}
         {Array.from({ length: 19 }).map((_, idx) => {
           const coord = (idx + 1) * 0.5;
           const pStart = isoToScreen(coord, 0, 0);
@@ -253,7 +298,7 @@ export const InteriorSceneSVG: React.FC<InteriorSceneSVGProps> = ({
               y1={pStart.y}
               x2={pEnd.x}
               y2={pEnd.y}
-              stroke="rgba(74, 42, 20, 0.28)"
+              stroke="rgba(74, 42, 20, 0.26)"
               strokeWidth="0.9"
             />
           );
@@ -269,13 +314,13 @@ export const InteriorSceneSVG: React.FC<InteriorSceneSVGProps> = ({
               y1={pStart.y}
               x2={pEnd.x}
               y2={pEnd.y}
-              stroke="rgba(74, 42, 20, 0.18)"
+              stroke="rgba(74, 42, 20, 0.16)"
               strokeWidth="0.8"
             />
           );
         })}
 
-        {/* Cutaway Floor Foundation Thickness Bevels (Front-Left SW & Front-Right SE edges) */}
+        {/* Cutaway Floor Foundation Bevels */}
         <polygon
           points={isoPolygon([
             [0, ROOM_SIZE + 1.15, -0.05],
@@ -295,8 +340,8 @@ export const InteriorSceneSVG: React.FC<InteriorSceneSVGProps> = ({
           fill="#59361C"
         />
 
-        {/* ================= 2. WOVEN AREA RUGS ON THE FLOOR ================= */}
-        {/* Central Woven Terracotta & Cream Kilim Rug under the Central Table */}
+        {/* ================= 2. THREE SOCIAL ZONE RUGS & ARCHITECTURAL ZONE MEDALLIONS ================= */}
+        {/* Shared Work Zone Central Kilim Rug */}
         <polygon
           points={isoPolygon([
             [3.65, 3.65, 0.01],
@@ -304,7 +349,7 @@ export const InteriorSceneSVG: React.FC<InteriorSceneSVGProps> = ({
             [6.85, 6.85, 0.01],
             [3.65, 6.85, 0.01],
           ])}
-          fill="#8F3F2E"
+          fill={theme.rugPrimary}
           stroke="#E0C39B"
           strokeWidth="1.5"
         />
@@ -315,24 +360,13 @@ export const InteriorSceneSVG: React.FC<InteriorSceneSVGProps> = ({
             [6.55, 6.55, 0.015],
             [3.95, 6.55, 0.015],
           ])}
-          fill="#A84E39"
+          fill="none"
           stroke="#D49A4E"
           strokeWidth="1"
           strokeDasharray="4 2"
         />
-        {/* Geometric diamond motif in center of rug */}
-        <polygon
-          points={isoPolygon([
-            [4.7, 5.25, 0.02],
-            [5.25, 4.7, 0.02],
-            [5.8, 5.25, 0.02],
-            [5.25, 5.8, 0.02],
-          ])}
-          fill="#E0C39B"
-          opacity="0.7"
-        />
 
-        {/* Deep Forest-Sage Corner Sanctuary Rug under the Quiet Corner Booth */}
+        {/* Quiet Study Sanctuary Corner Rug */}
         <polygon
           points={isoPolygon([
             [0.85, 0.95, 0.01],
@@ -345,7 +379,31 @@ export const InteriorSceneSVG: React.FC<InteriorSceneSVGProps> = ({
           strokeWidth="1.2"
         />
 
-        {/* Welcome Mat Inside the Front-Left Café Doorway (at isoX: 8.2..9.5, isoY: 9.1..9.9) */}
+        {/* Subtle Zone Brass Floor Plates when in Overview */}
+        {!selectedSeatId && (
+          <g className="pointer-events-none" opacity="0.78">
+            <g transform={`translate(${quietZoneLabelPos.x}, ${quietZoneLabelPos.y})`}>
+              <rect x="-48" y="-7" width="96" height="14" rx="7" fill="rgba(22, 34, 28, 0.8)" stroke="#68D391" strokeWidth="0.6" />
+              <text x="0" y="2.5" textAnchor="middle" fill="#A3E8BE" fontSize="6.5" fontFamily="Plus Jakarta Sans, sans-serif" fontWeight="700" letterSpacing="0.8">
+                QUIET STUDY ZONE
+              </text>
+            </g>
+            <g transform={`translate(${sharedZoneLabelPos.x}, ${sharedZoneLabelPos.y})`}>
+              <rect x="-52" y="-7" width="104" height="14" rx="7" fill="rgba(38, 22, 16, 0.82)" stroke="#F3B664" strokeWidth="0.6" />
+              <text x="0" y="2.5" textAnchor="middle" fill="#FFE0B5" fontSize="6.5" fontFamily="Plus Jakarta Sans, sans-serif" fontWeight="700" letterSpacing="0.8">
+                SHARED WORK TABLE
+              </text>
+            </g>
+            <g transform={`translate(${loungeZoneLabelPos.x}, ${loungeZoneLabelPos.y})`}>
+              <rect x="-48" y="-7" width="96" height="14" rx="7" fill="rgba(36, 24, 18, 0.82)" stroke="#D48C46" strokeWidth="0.6" />
+              <text x="0" y="2.5" textAnchor="middle" fill="#F5DFB8" fontSize="6.5" fontFamily="Plus Jakarta Sans, sans-serif" fontWeight="700" letterSpacing="0.8">
+                SOCIAL LOUNGE
+              </text>
+            </g>
+          </g>
+        )}
+
+        {/* Welcome Mat Inside the Café Doorway */}
         <polygon
           points={isoPolygon([
             [8.1, 9.0, 0.01],
@@ -358,10 +416,9 @@ export const InteriorSceneSVG: React.FC<InteriorSceneSVGProps> = ({
           strokeWidth="1"
         />
 
-        {/* ================= 3. CUTAWAY WALLS, WAINSCOTING, WINDOWS & FIREPLACE ================= */}
-        {/* BACK-LEFT (NW) WALL: isoX = 0, isoY = 0..10, isoZ = 0..WALL_H */}
+        {/* ================= 3. CUTAWAY WALLS, WINDOWS & FIREPLACE ================= */}
+        {/* BACK-LEFT (NW) WALL */}
         <g>
-          {/* Wall Thickness Top Rim */}
           <polygon
             points={isoPolygon([
               [-0.25, 0, WALL_H],
@@ -373,7 +430,6 @@ export const InteriorSceneSVG: React.FC<InteriorSceneSVGProps> = ({
             stroke="#3B2314"
             strokeWidth="1"
           />
-          {/* Main Plaster Wall Surface */}
           <polygon
             points={isoPolygon([
               [0, 0, 0],
@@ -385,7 +441,6 @@ export const InteriorSceneSVG: React.FC<InteriorSceneSVGProps> = ({
             stroke="#593820"
             strokeWidth="1.2"
           />
-          {/* Forest-Sage Timber Wainscoting Along Bottom of NW Wall (isoZ: 0..1.05) */}
           <polygon
             points={isoPolygon([
               [0, 0, 0],
@@ -393,11 +448,10 @@ export const InteriorSceneSVG: React.FC<InteriorSceneSVGProps> = ({
               [0, ROOM_SIZE, 1.05],
               [0, 0, 1.05],
             ])}
-            fill="#2E473B"
+            fill={theme.wainscotColor}
             stroke="#1C2E26"
             strokeWidth="1"
           />
-          {/* Walnut Chair Rail Trim */}
           <polygon
             points={isoPolygon([
               [0, 0, 1.02],
@@ -408,7 +462,7 @@ export const InteriorSceneSVG: React.FC<InteriorSceneSVGProps> = ({
             fill="#5C381E"
           />
 
-          {/* Tall Arched Window on the NW Wall (above Window Seat I, isoY: 7.0..9.2, isoZ: 1.15..3.15) */}
+          {/* Arched Window on NW Wall */}
           <polygon
             points={isoPolygon([
               [0.02, 7.0, 1.15],
@@ -420,7 +474,6 @@ export const InteriorSceneSVG: React.FC<InteriorSceneSVGProps> = ({
             stroke="#4A2E1B"
             strokeWidth="3.5"
           />
-          {/* Exterior Golden Ginkgo Foliage Silhouette visible outside the NW Window */}
           {(() => {
             const winCenter = isoToScreen(0.02, 8.1, 2.1);
             return (
@@ -430,7 +483,6 @@ export const InteriorSceneSVG: React.FC<InteriorSceneSVGProps> = ({
               </g>
             );
           })()}
-          {/* Window Mullion Crossbars */}
           <line
             x1={isoToScreen(0.02, 8.1, 1.15).x}
             y1={isoToScreen(0.02, 8.1, 1.15).y}
@@ -448,7 +500,7 @@ export const InteriorSceneSVG: React.FC<InteriorSceneSVGProps> = ({
             strokeWidth="2.2"
           />
 
-          {/* Framed Botanical Art Prints & Warm Wall Sconce in the Quiet Corner (isoY: 1.1..2.6) */}
+          {/* Framed Botanical Art & Brass Sconce */}
           <polygon
             points={isoPolygon([
               [0.02, 1.15, 1.65],
@@ -465,7 +517,6 @@ export const InteriorSceneSVG: React.FC<InteriorSceneSVGProps> = ({
             const sconcePos = isoToScreen(0.05, 2.55, 2.5);
             return (
               <g>
-                {/* Botanical fern illustration inside frame */}
                 <path
                   d={`M ${artCenter.x},${artCenter.y + 10} Q ${artCenter.x - 3},${artCenter.y - 4} ${artCenter.x + 2},${artCenter.y - 12}`}
                   fill="none"
@@ -474,7 +525,6 @@ export const InteriorSceneSVG: React.FC<InteriorSceneSVGProps> = ({
                 />
                 <circle cx={artCenter.x - 3} cy={artCenter.y - 3} r="3.5" fill="#4D805F" />
                 <circle cx={artCenter.x + 3} cy={artCenter.y - 6} r="3" fill="#5B946E" />
-                {/* Glowing Brass Wall Sconce */}
                 <circle cx={sconcePos.x} cy={sconcePos.y} r="22" fill="url(#warmLampHalo)" opacity="0.8" />
                 <polygon
                   points={`${sconcePos.x - 5},${sconcePos.y} ${sconcePos.x + 5},${sconcePos.y} ${sconcePos.x + 8},${sconcePos.y + 8} ${sconcePos.x - 8},${sconcePos.y + 8}`}
@@ -487,9 +537,8 @@ export const InteriorSceneSVG: React.FC<InteriorSceneSVGProps> = ({
           })()}
         </g>
 
-        {/* BACK-RIGHT (NE) WALL: isoX = 0..10, isoY = 0, isoZ = 0..WALL_H */}
+        {/* BACK-RIGHT (NE) WALL */}
         <g>
-          {/* Wall Thickness Top Rim */}
           <polygon
             points={isoPolygon([
               [0, -0.25, WALL_H],
@@ -501,7 +550,6 @@ export const InteriorSceneSVG: React.FC<InteriorSceneSVGProps> = ({
             stroke="#3B2314"
             strokeWidth="1"
           />
-          {/* Main NE Wall Surface */}
           <polygon
             points={isoPolygon([
               [0, 0, 0],
@@ -513,7 +561,6 @@ export const InteriorSceneSVG: React.FC<InteriorSceneSVGProps> = ({
             stroke="#593820"
             strokeWidth="1.2"
           />
-          {/* Forest-Sage Wainscoting Along Bottom of NE Wall */}
           <polygon
             points={isoPolygon([
               [0, 0, 0],
@@ -521,7 +568,7 @@ export const InteriorSceneSVG: React.FC<InteriorSceneSVGProps> = ({
               [ROOM_SIZE, 0, 1.05],
               [0, 0, 1.05],
             ])}
-            fill="#263B31"
+            fill={theme.wainscotColor}
             stroke="#182620"
             strokeWidth="1"
           />
@@ -535,14 +582,13 @@ export const InteriorSceneSVG: React.FC<InteriorSceneSVGProps> = ({
             fill="#4D2E18"
           />
 
-          {/* COZY BRICK & CAST-IRON HEARTH FIREPLACE (on NE Wall at isoX: 1.5..3.3, isoY: 0..0.45) */}
+          {/* Hearth Fireplace */}
           {(() => {
             const fpBox = isoBoxFaces(1.55, 0, 0, 1.65, 0.45, 1.75);
             const fireboxCenter = isoToScreen(2.38, 0.46, 0.35);
             const clockPos = isoToScreen(2.38, 0.05, 2.65);
             return (
               <g>
-                {/* Warm Hearth Glow on the Floor */}
                 <ellipse
                   cx={fireboxCenter.x}
                   cy={fireboxCenter.y + 18}
@@ -551,12 +597,10 @@ export const InteriorSceneSVG: React.FC<InteriorSceneSVGProps> = ({
                   fill="url(#fireplaceFloorGlow)"
                   className={!reducedMotion ? 'lamp-breathe' : ''}
                 />
-                {/* Brick Chimney Breast & Oak Mantelpiece */}
                 <polygon points={fpBox.leftFace} fill="#7A3E2E" stroke="#3D1C14" strokeWidth="1" />
                 <polygon points={fpBox.rightFace} fill="#633022" stroke="#3D1C14" strokeWidth="1" />
                 <polygon points={fpBox.top} fill="#5C381E" stroke="#2E1A0D" strokeWidth="1.2" />
 
-                {/* Arched Cast-Iron Firebox Opening */}
                 <polygon
                   points={isoPolygon([
                     [1.85, 0.46, 0],
@@ -568,7 +612,6 @@ export const InteriorSceneSVG: React.FC<InteriorSceneSVGProps> = ({
                   stroke="#362822"
                   strokeWidth="1.5"
                 />
-                {/* Glowing Logs & Flickering Hearth Flames */}
                 <g transform={`translate(${fireboxCenter.x}, ${fireboxCenter.y})`}>
                   <line x1="-12" y1="6" x2="10" y2="2" stroke="#4A2816" strokeWidth="4" strokeLinecap="round" />
                   <line x1="-10" y1="2" x2="12" y2="7" stroke="#3B1E10" strokeWidth="4" strokeLinecap="round" />
@@ -576,18 +619,11 @@ export const InteriorSceneSVG: React.FC<InteriorSceneSVGProps> = ({
                     className={!reducedMotion ? 'flame-flicker' : ''}
                     opacity={isFireplaceActive ? 1 : 0.65}
                   >
-                    <path
-                      d="M -8,4 C -10,-10 0,-18 0,-24 C 2,-16 10,-10 8,4 Z"
-                      fill="#E86F2C"
-                    />
-                    <path
-                      d="M -4,4 C -5,-6 1,-12 1,-16 C 3,-10 6,-6 4,4 Z"
-                      fill="#FFD15C"
-                    />
+                    <path d="M -8,4 C -10,-10 0,-18 0,-24 C 2,-16 10,-10 8,4 Z" fill="#E86F2C" />
+                    <path d="M -4,4 C -5,-6 1,-12 1,-16 C 3,-10 6,-6 4,4 Z" fill="#FFD15C" />
                   </g>
                 </g>
 
-                {/* Vintage Brass Pendulum Wall Clock above Mantel */}
                 <circle
                   cx={clockPos.x}
                   cy={clockPos.y}
@@ -602,7 +638,7 @@ export const InteriorSceneSVG: React.FC<InteriorSceneSVGProps> = ({
             );
           })()}
 
-          {/* Chalkboard Roastery Menu Sign on NE Wall above Espresso Counter (isoX: 5.2..7.5, isoZ: 2.65..3.35) */}
+          {/* Chalkboard Roastery Menu Sign */}
           <polygon
             points={isoPolygon([
               [5.1, 0.05, 2.7],
@@ -634,10 +670,8 @@ export const InteriorSceneSVG: React.FC<InteriorSceneSVGProps> = ({
           })()}
         </g>
 
-        {/* FRONT-LEFT (SW) CUTAWAY WINDOW & ENTRANCE WALL (isoX: 0..10, isoY = 10) */}
-        {/* Low Architectural Cutaway Sill & Mullioned Window Frames so you see both the street outside and the seats inside */}
+        {/* FRONT-LEFT (SW) CUTAWAY WINDOW & ENTRANCE WALL */}
         <g className="pointer-events-none">
-          {/* Low Cutaway Wall Base Sill along SW Wall (isoX: 0..8.0, isoY: 10, isoZ: 0..0.42) */}
           <polygon
             points={isoPolygon([
               [0, ROOM_SIZE, 0],
@@ -645,7 +679,7 @@ export const InteriorSceneSVG: React.FC<InteriorSceneSVGProps> = ({
               [8.0, ROOM_SIZE, 0.42],
               [0, ROOM_SIZE, 0.42],
             ])}
-            fill="#2E473B"
+            fill={theme.wainscotColor}
             stroke="#1C2E26"
             strokeWidth="1.2"
           />
@@ -658,8 +692,6 @@ export const InteriorSceneSVG: React.FC<InteriorSceneSVGProps> = ({
             ])}
             fill="#6E472B"
           />
-
-          {/* Translucent Glass Window Panes for Window Seat II (isoX: 4.5..7.6, isoY: 10, isoZ: 0.42..2.25) */}
           <polygon
             points={isoPolygon([
               [4.6, ROOM_SIZE, 0.42],
@@ -672,7 +704,6 @@ export const InteriorSceneSVG: React.FC<InteriorSceneSVGProps> = ({
             strokeWidth="2"
           />
 
-          {/* Raindrops on Café Windows when Rain Soundscape is Active */}
           {isRaining && (
             <g opacity="0.55">
               {[7.3, 7.7, 8.1, 8.5, 8.9].map((wy, i) => {
@@ -713,9 +744,8 @@ export const InteriorSceneSVG: React.FC<InteriorSceneSVGProps> = ({
           )}
         </g>
 
-        {/* ================= 4. SLANTED GOLDEN SUNBEAMS ACROSS THE FLOOR ================= */}
+        {/* ================= 4. SLANTED GOLDEN SUNBEAMS ================= */}
         <g opacity={sunbeamOpacity} className="pointer-events-none">
-          {/* Sunbeam 1 streaming through Window 1 across Window Seat I */}
           <polygon
             points={isoPolygon([
               [0.1, 7.0, 2.4],
@@ -725,7 +755,6 @@ export const InteriorSceneSVG: React.FC<InteriorSceneSVGProps> = ({
             ])}
             fill="url(#sunbeamGrad)"
           />
-          {/* Sunbeam 2 streaming across Window Seat II */}
           <polygon
             points={isoPolygon([
               [4.7, 9.9, 1.8],
@@ -738,51 +767,91 @@ export const InteriorSceneSVG: React.FC<InteriorSceneSVGProps> = ({
         </g>
 
         {/* ================= 5. INTERIOR ARCHITECTURAL ZONES & PLANTS ================= */}
-        {/* 5A. Floor-to-Ceiling Walnut Bookshelf & Sleeping Cat (NW Wall) */}
         <IsoBookshelfUnit reducedMotion={reducedMotion} />
-
-        {/* 5B. Back Corner Fiddle-Leaf Fig Tree (between Bookshelf & Quiet Corner) */}
         <IsoPlant isoX={0.8} isoY={0.85} scale={1} variant="fiddle" reducedMotion={reducedMotion} />
-
-        {/* 5C. Artisan Espresso Counter, Espresso Machine, Pastry Case & Barista */}
         <IsoEspressoCounter reducedMotion={reducedMotion} />
-
-        {/* 5D. Monstera Planter beside the Roastery Counter */}
-        <IsoPlant isoX={8.85} isoY={1.55} scale={0.95} variant="monstera" reducedMotion={reducedMotion} />
-
-        {/* 5E. Window Bay Fiddle-Leaf Fig Tree near Front Entrance */}
+        <IsoPlant isoX={9.05} isoY={1.55} scale={0.95} variant="monstera" reducedMotion={reducedMotion} />
         <IsoPlant isoX={1.15} isoY={9.25} scale={0.95} variant="fiddle" reducedMotion={reducedMotion} />
 
-        {/* ================= 6. SIX INTERACTIVE SEATING STATIONS (DEPTH-SORTED) ================= */}
+        {/* Shared Communal Table Base (seats central-1..4 sit around it) */}
+        <IsoCommunalTableBase />
+
+        {/* Social Lounge Coffee Table, Rug & Brass Floor Lamp (seats lounge-1..2 sit around it) */}
+        <IsoSocialLoungeCornerBase />
+
+        {/* ================= 6. TWELVE INTERACTIVE SEATING STATIONS & SEATED AVATARS ================= */}
         {sortedSeats.map((seat) => {
-          const isSelected = selectedSeatId === seat.id;
+          const occupant = seatOccupants.get(seat.id) || null;
+          const isSelfSeatedHere = selectedSeatId === seat.id;
           const isHovered = hoveredSeatId === seat.id;
+          const hasSomeoneSeated = Boolean(occupant || isSelfSeatedHere);
+
           return (
             <IsoSeatStation
               key={seat.id}
               seat={seat}
+              occupant={occupant}
+              isSelfSeatedHere={isSelfSeatedHere}
               isHovered={isHovered}
-              isSelected={isSelected}
               anySeatSelected={selectedSeatId !== null}
               reducedMotion={reducedMotion}
               onSelect={onSelectSeat}
               onHoverChange={onHoverSeat}
             >
+              {/* Render Laptop & Steaming Coffee for any occupied seat */}
               <SeatedWorkspaceItems
                 x={seat.tableScreenX}
                 y={seat.tableScreenY}
                 facing={seat.laptopFacing}
-                isSeated={isSelected}
-                isTimerRunning={isTimerRunning}
-                currentGoal={currentGoal}
-                reducedMotion={reducedMotion}
-                onSipCoffee={onSipCoffee}
+                isSeated={hasSomeoneSeated}
+                isTimerRunning={isSelfSeatedHere ? isTimerRunning : true}
+                currentGoal={
+                  isSelfSeatedHere
+                    ? currentGoal
+                    : occupant?.focusGoal || ''
+                }
+                reducedMotion={shouldSkipAnim}
+                onSipCoffee={isSelfSeatedHere ? onSipCoffee : undefined}
               />
+
+              {/* Render Visitor SVG Avatar Seated at This Seat */}
+              {occupant && (
+                <IsoAvatar
+                  visitor={occupant}
+                  x={seat.avatarScreenX}
+                  y={seat.avatarScreenY - 12}
+                  isSelf={occupant.userId === selfUserId}
+                  isSeated={true}
+                  activeReaction={activeReactions[occupant.userId] || null}
+                  reducedMotion={reducedMotion}
+                  onSelectVisitor={onSelectVisitor}
+                />
+              )}
             </IsoSeatStation>
           );
         })}
 
-        {/* ================= 7. FOREGROUND HANGING PENDANT LIGHTS ================= */}
+        {/* ================= 7. STANDING VISITORS IN RECEPTION AREA ================= */}
+        {standingVisitors.map((visitor, idx) => {
+          const standIsoX = 8.4 - (idx % 3) * 0.65;
+          const standIsoY = 8.9 - Math.floor(idx / 3) * 0.65;
+          const pt = isoToScreen(standIsoX, standIsoY, 0);
+          return (
+            <IsoAvatar
+              key={visitor.userId}
+              visitor={visitor}
+              x={pt.x}
+              y={pt.y}
+              isSelf={visitor.userId === selfUserId}
+              isSeated={false}
+              activeReaction={activeReactions[visitor.userId] || null}
+              reducedMotion={reducedMotion}
+              onSelectVisitor={onSelectVisitor}
+            />
+          );
+        })}
+
+        {/* ================= 8. FOREGROUND HANGING PENDANT LIGHTS ================= */}
         <IsoHangingLamp isoX={2.1} isoY={2.3} cordTopZ={3.9} lampZ={2.55} reducedMotion={reducedMotion} />
         <IsoHangingLamp isoX={5.2} isoY={5.2} cordTopZ={4.1} lampZ={2.75} reducedMotion={reducedMotion} />
         <IsoHangingLamp isoX={6.4} isoY={2.2} cordTopZ={3.9} lampZ={2.6} reducedMotion={reducedMotion} />

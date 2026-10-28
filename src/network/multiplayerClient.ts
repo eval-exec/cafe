@@ -1,0 +1,561 @@
+import {
+  ActivityStatus,
+  AvatarConfig,
+  CafeRoomId,
+  ChatMessage,
+  ReactionEvent,
+  ReactionKind,
+  RoomSnapshot,
+  SeatId,
+  SharedTimerState,
+  TimerPhase,
+  VisitorPresence,
+} from '../types';
+
+export type ConnectionStatus = 'connected-server' | 'connected-local-mesh' | 'reconnecting';
+
+interface ClientIdentity {
+  userId: string;
+  authToken: string;
+  displayName: string;
+  avatar: AvatarConfig;
+  activityStatus: ActivityStatus;
+  focusGoal: string | null;
+  shareFocusGoal: boolean;
+  focusStartedAtMs: number | null;
+  invisible: boolean;
+}
+
+type SnapshotListener = (snapshot: RoomSnapshot) => void;
+type ReactionListener = (reaction: ReactionEvent) => void;
+type ChatListener = (message: ChatMessage) => void;
+type StatusListener = (status: ConnectionStatus) => void;
+type ErrorListener = (reason: string) => void;
+
+export class CafeMultiplayerClient {
+  private ws: WebSocket | null = null;
+  private channel: BroadcastChannel | null = null;
+  private roomId: CafeRoomId = 'eval-exec-flagship';
+  private identity: ClientIdentity | null = null;
+  private currentSeatId: SeatId | null = null;
+  private status: ConnectionStatus = 'reconnecting';
+
+  private heartbeatTimer: number | null = null;
+  private reconnectTimer: number | null = null;
+
+  // Local mesh state (used when WebSocket server is unreachable, e.g. on static GitHub Pages)
+  private meshPeers: Map<string, VisitorPresence> = new Map();
+  private meshSeatOccupancy: Record<string, string> = {};
+  private meshSharedTimers: Record<string, SharedTimerState> = {};
+  private meshMessages: ChatMessage[] = [];
+  private meshVersion = 1;
+
+  private snapshotListeners = new Set<SnapshotListener>();
+  private reactionListeners = new Set<ReactionListener>();
+  private chatListeners = new Set<ChatListener>();
+  private statusListeners = new Set<StatusListener>();
+  private errorListeners = new Set<ErrorListener>();
+
+  public connect(roomId: CafeRoomId, identity: ClientIdentity, initialSeat: SeatId | null = null): void {
+    this.roomId = roomId;
+    this.identity = { ...identity };
+    this.currentSeatId = initialSeat;
+
+    this.setupBroadcastMesh();
+    this.connectWebSocket();
+
+    if (this.heartbeatTimer) window.clearInterval(this.heartbeatTimer);
+    this.heartbeatTimer = window.setInterval(() => {
+      this.sendHeartbeat();
+    }, 8000);
+  }
+
+  private getWsUrl(): string {
+    if (typeof window === 'undefined') return 'ws://127.0.0.1:3001/ws';
+    const host = window.location.hostname;
+    if (host === '127.0.0.1' || host === 'localhost') {
+      return `ws://127.0.0.1:3001/ws`;
+    }
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${proto}//${window.location.host}/ws`;
+  }
+
+  private connectWebSocket(): void {
+    if (typeof window === 'undefined') return;
+    // If hosted on github.io static pages, immediately activate the local BroadcastChannel mesh
+    if (window.location.hostname.endsWith('github.io')) {
+      this.setStatus('connected-local-mesh');
+      this.announceOnMesh();
+      return;
+    }
+
+    try {
+      if (this.ws) {
+        this.ws.onclose = null;
+        this.ws.close();
+      }
+
+      const ws = new WebSocket(this.getWsUrl());
+      this.ws = ws;
+
+      ws.onopen = () => {
+        this.setStatus('connected-server');
+        this.sendJoinCommand();
+        if (this.currentSeatId) {
+          this.claimSeat(this.currentSeatId);
+        }
+      };
+
+      ws.onmessage = (evt) => {
+        try {
+          const data = JSON.parse(evt.data);
+          this.handleServerEvent(data);
+        } catch {
+          // ignore malformed frames
+        }
+      };
+
+      ws.onerror = () => {
+        // Fallback to local multi-tab BroadcastChannel mesh seamlessly
+        if (this.status !== 'connected-server') {
+          this.setStatus('connected-local-mesh');
+          this.announceOnMesh();
+        }
+      };
+
+      ws.onclose = () => {
+        this.setStatus('connected-local-mesh');
+        this.announceOnMesh();
+        if (this.reconnectTimer) window.clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = window.setTimeout(() => {
+          this.connectWebSocket();
+        }, 5000);
+      };
+    } catch {
+      this.setStatus('connected-local-mesh');
+      this.announceOnMesh();
+    }
+  }
+
+  private setupBroadcastMesh(): void {
+    if (typeof window === 'undefined' || typeof BroadcastChannel === 'undefined') return;
+    if (this.channel) {
+      this.channel.close();
+    }
+    const bc = new BroadcastChannel(`eval_exec_cafe_room_${this.roomId}`);
+    this.channel = bc;
+
+    bc.onmessage = (evt) => {
+      const msg = evt.data;
+      if (!msg || typeof msg !== 'object') return;
+
+      if (msg.type === 'peer-presence') {
+        const peer = msg.presence as VisitorPresence;
+        if (peer.invisible) {
+          this.meshPeers.delete(peer.userId);
+        } else {
+          this.meshPeers.set(peer.userId, peer);
+        }
+        this.rebuildMeshOccupancy();
+        if (this.status === 'connected-local-mesh') {
+          this.emitMeshSnapshot();
+        }
+        if (msg.requestReply && this.identity) {
+          this.announceOnMesh(false);
+        }
+      } else if (msg.type === 'peer-leave') {
+        this.meshPeers.delete(msg.userId);
+        this.rebuildMeshOccupancy();
+        if (this.status === 'connected-local-mesh') {
+          this.emitMeshSnapshot();
+        }
+      } else if (msg.type === 'peer-reaction') {
+        if (this.status === 'connected-local-mesh') {
+          this.reactionListeners.forEach((cb) => cb(msg.reaction));
+        }
+      } else if (msg.type === 'peer-chat') {
+        if (this.status === 'connected-local-mesh') {
+          this.meshMessages.push(msg.message);
+          this.chatListeners.forEach((cb) => cb(msg.message));
+          this.emitMeshSnapshot();
+        }
+      } else if (msg.type === 'peer-timer') {
+        if (this.status === 'connected-local-mesh') {
+          if (msg.timer) {
+            this.meshSharedTimers[msg.tableId] = msg.timer;
+          } else {
+            delete this.meshSharedTimers[msg.tableId];
+          }
+          this.emitMeshSnapshot();
+        }
+      }
+    };
+
+    window.addEventListener('beforeunload', () => {
+      if (this.identity && this.channel) {
+        this.channel.postMessage({ type: 'peer-leave', userId: this.identity.userId });
+      }
+    });
+  }
+
+  private announceOnMesh(requestReply = true): void {
+    if (!this.identity) return;
+    const selfPresence: VisitorPresence = {
+      userId: this.identity.userId,
+      displayName: this.identity.displayName,
+      avatar: this.identity.avatar,
+      seatId: this.identity.invisible ? null : this.currentSeatId,
+      activityStatus: this.identity.activityStatus,
+      focusGoal: this.identity.shareFocusGoal ? this.identity.focusGoal : null,
+      shareFocusGoal: this.identity.shareFocusGoal,
+      focusStartedAtMs: this.identity.focusStartedAtMs,
+      invisible: this.identity.invisible,
+      lastHeartbeatMs: Date.now(),
+    };
+
+    if (this.identity.invisible) {
+      this.meshPeers.delete(this.identity.userId);
+    } else {
+      this.meshPeers.set(this.identity.userId, selfPresence);
+    }
+    this.rebuildMeshOccupancy();
+
+    this.channel?.postMessage({
+      type: 'peer-presence',
+      presence: selfPresence,
+      requestReply,
+    });
+
+    if (this.status === 'connected-local-mesh') {
+      this.emitMeshSnapshot();
+    }
+  }
+
+  private rebuildMeshOccupancy(): void {
+    const now = Date.now();
+    const occ: Record<string, string> = {};
+    for (const [uid, peer] of this.meshPeers.entries()) {
+      if (now - peer.lastHeartbeatMs > 30000) {
+        this.meshPeers.delete(uid);
+        continue;
+      }
+      if (peer.seatId && !occ[peer.seatId]) {
+        occ[peer.seatId] = uid;
+      }
+    }
+    this.meshSeatOccupancy = occ;
+  }
+
+  private emitMeshSnapshot(): void {
+    this.meshVersion += 1;
+    const snap: RoomSnapshot = {
+      roomId: this.roomId,
+      version: this.meshVersion,
+      serverTimeMs: Date.now(),
+      visitors: Array.from(this.meshPeers.values()),
+      seatOccupancy: { ...this.meshSeatOccupancy },
+      sharedTimers: { ...this.meshSharedTimers },
+      recentMessages: [...this.meshMessages],
+    };
+    this.snapshotListeners.forEach((cb) => cb(snap));
+  }
+
+  private setStatus(next: ConnectionStatus): void {
+    if (this.status !== next) {
+      this.status = next;
+      this.statusListeners.forEach((cb) => cb(next));
+    }
+  }
+
+  private handleServerEvent(event: Record<string, unknown>): void {
+    const type = event.type as string;
+    if (type === 'snapshot') {
+      const snap: RoomSnapshot = {
+        roomId: event.roomId as string,
+        version: event.version as number,
+        serverTimeMs: event.serverTimeMs as number,
+        visitors: (event.visitors as VisitorPresence[]) || [],
+        seatOccupancy: (event.seatOccupancy as Record<string, string>) || {},
+        sharedTimers: (event.sharedTimers as Record<string, SharedTimerState>) || {},
+        recentMessages: (event.recentMessages as ChatMessage[]) || [],
+      };
+      this.snapshotListeners.forEach((cb) => cb(snap));
+    } else if (type === 'reaction') {
+      const rx: ReactionEvent = {
+        id: event.id as string,
+        senderId: event.senderId as string,
+        senderName: event.senderName as string,
+        targetUserId: event.targetUserId as string | null,
+        kind: event.kind as ReactionKind,
+        timestampMs: event.timestampMs as number,
+      };
+      this.reactionListeners.forEach((cb) => cb(rx));
+    } else if (type === 'chat') {
+      const msg: ChatMessage = {
+        id: event.id as string,
+        roomId: event.roomId as string,
+        tableId: event.tableId as string,
+        senderId: event.senderId as string,
+        senderName: event.senderName as string,
+        text: event.text as string,
+        timestampMs: event.timestampMs as number,
+      };
+      this.chatListeners.forEach((cb) => cb(msg));
+    } else if (type === 'error') {
+      this.errorListeners.forEach((cb) => cb(String(event.reason || 'Action rejected')));
+    }
+  }
+
+  private sendWs(payload: Record<string, unknown>): boolean {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(payload));
+      return true;
+    }
+    return false;
+  }
+
+  private sendJoinCommand(): void {
+    if (!this.identity) return;
+    this.sendWs({
+      type: 'joinRoom',
+      roomId: this.roomId,
+      userId: this.identity.userId,
+      authToken: this.identity.authToken,
+      displayName: this.identity.displayName,
+      avatar: this.identity.avatar,
+      activityStatus: this.identity.activityStatus,
+      invisible: this.identity.invisible,
+    });
+  }
+
+  private sendHeartbeat(): void {
+    if (!this.identity) return;
+    if (!this.sendWs({
+      type: 'heartbeat',
+      userId: this.identity.userId,
+      authToken: this.identity.authToken,
+    })) {
+      this.announceOnMesh(false);
+    }
+  }
+
+  public switchRoom(newRoomId: CafeRoomId): void {
+    if (this.identity && this.channel) {
+      this.channel.postMessage({ type: 'peer-leave', userId: this.identity.userId });
+    }
+    this.roomId = newRoomId;
+    this.currentSeatId = null;
+    this.meshPeers.clear();
+    this.meshSeatOccupancy = {};
+    this.meshSharedTimers = {};
+    this.meshMessages = [];
+    this.setupBroadcastMesh();
+    if (!this.sendWs({
+      type: 'joinRoom',
+      roomId: this.roomId,
+      userId: this.identity?.userId,
+      authToken: this.identity?.authToken,
+      displayName: this.identity?.displayName,
+      avatar: this.identity?.avatar,
+      activityStatus: this.identity?.activityStatus,
+      invisible: this.identity?.invisible,
+    })) {
+      this.announceOnMesh(true);
+    }
+  }
+
+  public claimSeat(seatId: SeatId | null): boolean {
+    if (!this.identity) return false;
+    // Check local mesh occupancy before claiming
+    if (seatId && this.status === 'connected-local-mesh') {
+      const holder = this.meshSeatOccupancy[seatId];
+      if (holder && holder !== this.identity.userId) {
+        this.errorListeners.forEach((cb) => cb('Seat is already occupied by another visitor'));
+        return false;
+      }
+    }
+    this.currentSeatId = seatId;
+    if (!this.sendWs({
+      type: 'claimSeat',
+      userId: this.identity.userId,
+      authToken: this.identity.authToken,
+      seatId,
+    })) {
+      this.announceOnMesh(false);
+    }
+    return true;
+  }
+
+  public updateIdentity(next: Partial<ClientIdentity>): void {
+    if (!this.identity) return;
+    this.identity = { ...this.identity, ...next };
+    if (!this.sendWs({
+      type: 'updateStatus',
+      userId: this.identity.userId,
+      authToken: this.identity.authToken,
+      displayName: this.identity.displayName,
+      avatar: this.identity.avatar,
+      activityStatus: this.identity.activityStatus,
+      focusGoal: this.identity.focusGoal,
+      shareFocusGoal: this.identity.shareFocusGoal,
+      focusStartedAtMs: this.identity.focusStartedAtMs,
+      invisible: this.identity.invisible,
+    })) {
+      this.announceOnMesh(false);
+    }
+  }
+
+  public sendReaction(kind: ReactionKind, targetUserId: string | null = null): void {
+    if (!this.identity) return;
+    if (!this.sendWs({
+      type: 'sendReaction',
+      userId: this.identity.userId,
+      authToken: this.identity.authToken,
+      targetUserId,
+      kind,
+    })) {
+      const rx: ReactionEvent = {
+        id: `rx-${Date.now()}`,
+        senderId: this.identity.userId,
+        senderName: this.identity.displayName,
+        targetUserId,
+        kind,
+        timestampMs: Date.now(),
+      };
+      this.reactionListeners.forEach((cb) => cb(rx));
+      this.channel?.postMessage({ type: 'peer-reaction', reaction: rx });
+    }
+  }
+
+  public sendChat(tableId: string, text: string): void {
+    if (!this.identity) return;
+    const trimmed = text.trim().slice(0, 280);
+    if (!trimmed) return;
+    if (!this.sendWs({
+      type: 'sendChat',
+      userId: this.identity.userId,
+      authToken: this.identity.authToken,
+      tableId,
+      text: trimmed,
+    })) {
+      const msg: ChatMessage = {
+        id: `msg-${Date.now()}`,
+        roomId: this.roomId,
+        tableId,
+        senderId: this.identity.userId,
+        senderName: this.identity.displayName,
+        text: trimmed,
+        timestampMs: Date.now(),
+      };
+      this.meshMessages.push(msg);
+      this.chatListeners.forEach((cb) => cb(msg));
+      this.channel?.postMessage({ type: 'peer-chat', message: msg });
+      this.emitMeshSnapshot();
+    }
+  }
+
+  public startSharedTimer(
+    tableId: string,
+    phase: TimerPhase,
+    durationSec: number,
+    sharedGoal: string
+  ): void {
+    if (!this.identity) return;
+    if (!this.sendWs({
+      type: 'startSharedTimer',
+      userId: this.identity.userId,
+      authToken: this.identity.authToken,
+      tableId,
+      phase,
+      durationSec,
+      sharedGoal,
+    })) {
+      const timer: SharedTimerState = {
+        tableId,
+        phase,
+        durationSec,
+        startedAtMs: Date.now(),
+        isRunning: true,
+        sharedGoal,
+        participants: [this.identity.userId],
+        hostUserId: this.identity.userId,
+      };
+      this.meshSharedTimers[tableId] = timer;
+      this.channel?.postMessage({ type: 'peer-timer', tableId, timer });
+      this.emitMeshSnapshot();
+    }
+  }
+
+  public joinSharedTimer(tableId: string): void {
+    if (!this.identity) return;
+    if (!this.sendWs({
+      type: 'joinSharedTimer',
+      userId: this.identity.userId,
+      authToken: this.identity.authToken,
+      tableId,
+    })) {
+      const timer = this.meshSharedTimers[tableId];
+      if (timer && !timer.participants.includes(this.identity.userId)) {
+        timer.participants.push(this.identity.userId);
+        this.channel?.postMessage({ type: 'peer-timer', tableId, timer });
+        this.emitMeshSnapshot();
+      }
+    }
+  }
+
+  public stopSharedTimer(tableId: string): void {
+    if (!this.identity) return;
+    if (!this.sendWs({
+      type: 'stopSharedTimer',
+      userId: this.identity.userId,
+      authToken: this.identity.authToken,
+      tableId,
+    })) {
+      const timer = this.meshSharedTimers[tableId];
+      if (timer) {
+        timer.isRunning = false;
+        this.channel?.postMessage({ type: 'peer-timer', tableId, timer });
+        this.emitMeshSnapshot();
+      }
+    }
+  }
+
+  public reportUser(reportedUserId: string, reason: string): void {
+    if (!this.identity) return;
+    this.sendWs({
+      type: 'reportUser',
+      userId: this.identity.userId,
+      authToken: this.identity.authToken,
+      reportedUserId,
+      reason,
+    });
+  }
+
+  public onSnapshot(cb: SnapshotListener): () => void {
+    this.snapshotListeners.add(cb);
+    return () => this.snapshotListeners.delete(cb);
+  }
+
+  public onReaction(cb: ReactionListener): () => void {
+    this.reactionListeners.add(cb);
+    return () => this.reactionListeners.delete(cb);
+  }
+
+  public onChat(cb: ChatListener): () => void {
+    this.chatListeners.add(cb);
+    return () => this.chatListeners.delete(cb);
+  }
+
+  public onStatus(cb: StatusListener): () => void {
+    this.statusListeners.add(cb);
+    cb(this.status);
+    return () => this.statusListeners.delete(cb);
+  }
+
+  public onError(cb: ErrorListener): () => void {
+    this.errorListeners.add(cb);
+    return () => this.errorListeners.delete(cb);
+  }
+}
+
+export const multiplayerClient = new CafeMultiplayerClient();

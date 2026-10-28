@@ -1,21 +1,26 @@
-import { AmbientLayerId, AudioPreferences, MusicStyle } from '../types';
+import { AmbientLayerId, AudioPreferences, MusicStyle, SceneMode } from '../types';
 
 /**
  * Pure Web Audio API Generative Music & Ambient Soundscape Engine.
  * Synthesizes Lo-Fi study beats, Soft Jazz Rhodes & upright bass, Gentle Felt Piano,
- * Cozy Café room murmur + porcelain clinks, Rain against windows, and Fireplace crackle.
+ * Cozy Café room murmur + porcelain clinks, Rain against windows, Fireplace crackle,
+ * and Mechanical/Tactile Keyboard Typing.
+ * Includes smooth exterior-to-interior storefront lowpass crossfading.
  */
 class CafeSoundEngine {
   private ctx: AudioContext | null = null;
   private masterGain: GainNode | null = null;
+  private sceneFilter: BiquadFilterNode | null = null;
   private musicGain: GainNode | null = null;
   private ambientGains: Record<AmbientLayerId, GainNode | null> = {
     cafe: null,
     rain: null,
     fire: null,
+    keyboard: null,
   };
 
   private isInitialized = false;
+  private currentScene: SceneMode = 'street';
   private prefs: AudioPreferences = {
     isPlaying: true,
     autoPlay: true,
@@ -28,11 +33,13 @@ class CafeSoundEngine {
       cafe: 0.45,
       rain: 0.35,
       fire: 0.3,
+      keyboard: 0.3,
     },
     ambientEnabled: {
       cafe: true,
       rain: true,
       fire: false,
+      keyboard: false,
     },
     sfxEnabled: true,
   };
@@ -45,7 +52,9 @@ class CafeSoundEngine {
   private ensureContext(): AudioContext | null {
     if (typeof window === 'undefined') return null;
     if (!this.ctx) {
-      const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      const AudioCtx =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       if (!AudioCtx) return null;
       this.ctx = new AudioCtx();
     }
@@ -84,7 +93,23 @@ class CafeSoundEngine {
     this.updateVolumes();
   }
 
-  private createNoiseBuffer(ctx: AudioContext, type: 'pink' | 'brown' | 'white', seconds = 4): AudioBuffer {
+  /**
+   * Smoothly crossfades interior warmth vs exterior muffled storefront sound
+   * when transitioning from the Street into the Café Interior.
+   */
+  public setSceneMode(scene: SceneMode): void {
+    this.currentScene = scene;
+    if (!this.ctx || !this.sceneFilter) return;
+    const now = this.ctx.currentTime;
+    const targetFreq = scene === 'street' ? 680 : 12000;
+    this.sceneFilter.frequency.setTargetAtTime(targetFreq, now, 0.45);
+  }
+
+  private createNoiseBuffer(
+    ctx: AudioContext,
+    type: 'pink' | 'brown' | 'white',
+    seconds = 4
+  ): AudioBuffer {
     const bufferSize = ctx.sampleRate * seconds;
     const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
     const output = buffer.getChannelData(0);
@@ -94,7 +119,13 @@ class CafeSoundEngine {
         output[i] = Math.random() * 2 - 1;
       }
     } else if (type === 'pink') {
-      let b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0;
+      let b0 = 0,
+        b1 = 0,
+        b2 = 0,
+        b3 = 0,
+        b4 = 0,
+        b5 = 0,
+        b6 = 0;
       for (let i = 0; i < bufferSize; i++) {
         const white = Math.random() * 2 - 1;
         b0 = 0.99886 * b0 + white * 0.0555179;
@@ -107,7 +138,6 @@ class CafeSoundEngine {
         b6 = white * 0.115926;
       }
     } else {
-      // Brown noise
       let lastOut = 0.0;
       for (let i = 0; i < bufferSize; i++) {
         const white = Math.random() * 2 - 1;
@@ -124,14 +154,19 @@ class CafeSoundEngine {
     this.masterGain.gain.value = 0;
     this.masterGain.connect(ctx.destination);
 
+    this.sceneFilter = ctx.createBiquadFilter();
+    this.sceneFilter.type = 'lowpass';
+    this.sceneFilter.frequency.value = this.currentScene === 'street' ? 680 : 12000;
+    this.sceneFilter.connect(this.masterGain);
+
     this.musicGain = ctx.createGain();
     this.musicGain.gain.value = this.prefs.musicVolume;
-    this.musicGain.connect(this.masterGain);
+    this.musicGain.connect(this.sceneFilter);
 
-    // 1. Cozy Café Ambience Continuous Bed (warm room murmur + air tone)
+    // 1. Cozy Café Ambience Continuous Bed
     const cafeGain = ctx.createGain();
     cafeGain.gain.value = 0;
-    cafeGain.connect(this.masterGain);
+    cafeGain.connect(this.sceneFilter);
     this.ambientGains.cafe = cafeGain;
 
     const cafeNoise = ctx.createBufferSource();
@@ -157,7 +192,7 @@ class CafeSoundEngine {
     cafeNoise.start();
     this.activeNodes.push(cafeNoise);
 
-    // 2. Rain Against Windows Continuous Bed
+    // 2. Rain Against Windows Continuous Bed (audible both outside and inside)
     const rainGain = ctx.createGain();
     rainGain.gain.value = 0;
     rainGain.connect(this.masterGain);
@@ -189,7 +224,7 @@ class CafeSoundEngine {
     // 3. Fireplace Hearth Continuous Bed
     const fireGain = ctx.createGain();
     fireGain.gain.value = 0;
-    fireGain.connect(this.masterGain);
+    fireGain.connect(this.sceneFilter);
     this.ambientGains.fire = fireGain;
 
     const fireNoise = ctx.createBufferSource();
@@ -209,7 +244,12 @@ class CafeSoundEngine {
     fireNoise.start();
     this.activeNodes.push(fireNoise);
 
-    // Start generative loops for music and organic ambient details
+    // 4. Keyboard Typing Gain Node (triggered organically in triggerAmbientDetails)
+    const keyboardGain = ctx.createGain();
+    keyboardGain.gain.value = 0;
+    keyboardGain.connect(this.sceneFilter);
+    this.ambientGains.keyboard = keyboardGain;
+
     this.startGenerativeLoops();
   }
 
@@ -236,16 +276,16 @@ class CafeSoundEngine {
     const shouldPlay = this.prefs.isPlaying && !this.prefs.isMuted && !this.prefs.quietMode;
     const targetMaster = shouldPlay ? this.prefs.masterVolume : 0;
 
-    this.masterGain.gain.setTargetAtTime(targetMaster, now, 0.08);
+    this.masterGain.gain.setTargetAtTime(targetMaster, now, 0.12);
 
     const targetMusic = this.prefs.musicStyle === 'none' ? 0 : this.prefs.musicVolume;
-    this.musicGain.gain.setTargetAtTime(targetMusic, now, 0.1);
+    this.musicGain.gain.setTargetAtTime(targetMusic, now, 0.14);
 
-    (['cafe', 'rain', 'fire'] as AmbientLayerId[]).forEach((id) => {
+    (['cafe', 'rain', 'fire', 'keyboard'] as AmbientLayerId[]).forEach((id) => {
       const node = this.ambientGains[id];
       if (node) {
-        const vol = this.prefs.ambientEnabled[id] ? this.prefs.ambientVolumes[id] : 0;
-        node.gain.setTargetAtTime(vol, now, 0.12);
+        const vol = this.prefs.ambientEnabled[id] ? (this.prefs.ambientVolumes[id] ?? 0.35) : 0;
+        node.gain.setTargetAtTime(vol, now, 0.15);
       }
     });
   }
@@ -254,7 +294,6 @@ class CafeSoundEngine {
     if (this.musicIntervalId !== null) window.clearInterval(this.musicIntervalId);
     if (this.ambientIntervalId !== null) window.clearInterval(this.ambientIntervalId);
 
-    // Music step sequencer every 650ms (~92 BPM half-beats)
     this.musicIntervalId = window.setInterval(() => {
       if (!this.ctx || !this.prefs.isPlaying || this.prefs.isMuted || this.prefs.quietMode) return;
       if (this.prefs.musicStyle === 'none' || this.prefs.musicVolume <= 0.01) return;
@@ -263,23 +302,21 @@ class CafeSoundEngine {
       this.stepCounter = (this.stepCounter + 1) % 32;
     }, 620);
 
-    // Organic ambient micro-events every 450ms (cup clinks, raindrops, fireplace crackles)
     this.ambientIntervalId = window.setInterval(() => {
       if (!this.ctx || !this.prefs.isPlaying || this.prefs.isMuted || this.prefs.quietMode) return;
       this.triggerAmbientDetails();
-    }, 450);
+    }, 320);
   }
 
   private playMusicStep(style: MusicStyle, step: number): void {
     if (!this.ctx || !this.musicGain) return;
     const now = this.ctx.currentTime;
 
-    // Warm chord progressions in F Major 9 / D Minor 9 / Bb Major 7 / C13
     const chordVoicings = [
-      [174.61, 220.00, 261.63, 329.63, 392.00], // Fmaj9 (F3, A3, C4, E4, G4)
-      [146.83, 220.00, 261.63, 329.63, 349.23], // Dm9 (D3, A3, C4, E4, F4)
-      [116.54, 174.61, 220.00, 261.63, 293.66], // Bbmaj9 (Bb2, F3, A3, C4, D4)
-      [130.81, 196.00, 233.08, 293.66, 329.63], // C9sus4 (C3, G3, Bb3, D4, E4)
+      [174.61, 220.0, 261.63, 329.63, 392.0], // Fmaj9
+      [146.83, 220.0, 261.63, 329.63, 349.23], // Dm9
+      [116.54, 174.61, 220.0, 261.63, 293.66], // Bbmaj9
+      [130.81, 196.0, 233.08, 293.66, 329.63], // C9sus4
     ];
 
     const chordIdx = Math.floor(step / 8) % chordVoicings.length;
@@ -287,17 +324,14 @@ class CafeSoundEngine {
     const beatInBar = step % 8;
 
     if (style === 'lofi') {
-      // On beat 0: Play warm detuned Rhodes tape chord
       if (beatInBar === 0) {
         chord.forEach((freq, i) => {
           this.playWarmKey(freq, now + i * 0.035, 3.8, 0.045, 'triangle');
         });
       }
-      // Subtle soft bass pulse on beat 0 and 5
       if (beatInBar === 0 || beatInBar === 5) {
         this.playSoftBass(chord[0] * 0.5, now, 1.1, 0.09);
       }
-      // Gentle pentatonic melody notes on off-beats
       if (beatInBar === 3 || beatInBar === 6) {
         const melodyNotes = [523.25, 587.33, 659.25, 440.0, 392.0];
         const note = melodyNotes[(step + chordIdx) % melodyNotes.length];
@@ -305,24 +339,20 @@ class CafeSoundEngine {
           this.playWarmKey(note, now, 1.4, 0.032, 'sine');
         }
       }
-      // Soft brushed hat / vinyl pulse
       if (beatInBar % 2 === 1) {
         this.playBrushPulse(now, 0.018);
       }
     } else if (style === 'jazz') {
-      // Soft Jazz: Rhodes comping + walking upright bass + brush swing
       if (beatInBar === 0 || beatInBar === 3) {
         chord.slice(1).forEach((freq, i) => {
           this.playWarmKey(freq, now + i * 0.02, 2.2, 0.038, 'sine');
         });
       }
-      // Walking upright bass on even steps
       if (beatInBar % 2 === 0) {
         const walkFactors = [0.5, 0.625, 0.75, 0.56];
         const bassFreq = chord[0] * walkFactors[(beatInBar / 2) % 4];
         this.playSoftBass(bassFreq, now, 0.95, 0.085);
       }
-      // Jazz vibraphone / upper tine improvisation
       if (beatInBar === 2 || beatInBar === 5 || beatInBar === 7) {
         const jazzScale = [440.0, 523.25, 587.33, 659.25, 698.46, 783.99];
         const note = jazzScale[(step * 3 + chordIdx) % jazzScale.length];
@@ -330,12 +360,9 @@ class CafeSoundEngine {
           this.playWarmKey(note, now + 0.08, 1.6, 0.028, 'sine');
         }
       }
-      // Swing brush tap
       this.playBrushPulse(now, beatInBar % 2 === 0 ? 0.012 : 0.02);
     } else if (style === 'piano') {
-      // Gentle Felt Piano: Erik Satie / Debussy style flowing arpeggios
       if (beatInBar === 0) {
-        // Deep felt bass root
         this.playWarmKey(chord[0] * 0.5, now, 4.2, 0.065, 'sine');
       }
       const arpNote = chord[beatInBar % chord.length];
@@ -358,7 +385,6 @@ class CafeSoundEngine {
 
     osc.type = type;
     osc.frequency.setValueAtTime(freq, startTime);
-    // Subtle organic tape warmth detune
     osc.detune.setValueAtTime((Math.random() - 0.5) * 8, startTime);
 
     filter.type = 'lowpass';
@@ -377,7 +403,12 @@ class CafeSoundEngine {
     osc.stop(startTime + duration + 0.05);
   }
 
-  private playSoftBass(freq: number, startTime: number, duration: number, peakGain: number): void {
+  private playSoftBass(
+    freq: number,
+    startTime: number,
+    duration: number,
+    peakGain: number
+  ): void {
     if (!this.ctx || !this.musicGain) return;
     const osc = this.ctx.createOscillator();
     const env = this.ctx.createGain();
@@ -425,9 +456,13 @@ class CafeSoundEngine {
     if (!this.ctx) return;
     const now = this.ctx.currentTime;
 
-    // 1. Cozy Café occasional distant porcelain cup clink or spoon stir
-    if (this.prefs.ambientEnabled.cafe && this.prefs.ambientVolumes.cafe > 0.05 && this.ambientGains.cafe) {
-      if (Math.random() < 0.09) {
+    // 1. Cozy Café occasional porcelain cup clink
+    if (
+      this.prefs.ambientEnabled.cafe &&
+      this.prefs.ambientVolumes.cafe > 0.05 &&
+      this.ambientGains.cafe
+    ) {
+      if (Math.random() < 0.07) {
         const clinkFreq = 2100 + Math.random() * 900;
         const osc = this.ctx.createOscillator();
         const env = this.ctx.createGain();
@@ -443,9 +478,13 @@ class CafeSoundEngine {
       }
     }
 
-    // 2. Fireplace occasional warm ember crackle pop
-    if (this.prefs.ambientEnabled.fire && this.prefs.ambientVolumes.fire > 0.05 && this.ambientGains.fire) {
-      if (Math.random() < 0.38) {
+    // 2. Fireplace occasional warm ember crackle
+    if (
+      this.prefs.ambientEnabled.fire &&
+      this.prefs.ambientVolumes.fire > 0.05 &&
+      this.ambientGains.fire
+    ) {
+      if (Math.random() < 0.34) {
         const osc = this.ctx.createOscillator();
         const filter = this.ctx.createBiquadFilter();
         const env = this.ctx.createGain();
@@ -468,6 +507,41 @@ class CafeSoundEngine {
         osc.stop(now + 0.04);
       }
     }
+
+    // 3. Soft Tactile Mechanical Keyboard Typing Cadence
+    if (
+      this.prefs.ambientEnabled.keyboard &&
+      (this.prefs.ambientVolumes.keyboard ?? 0.3) > 0.05 &&
+      this.ambientGains.keyboard
+    ) {
+      // Cluster of 1-3 soft keystrokes
+      const burstCount = Math.random() < 0.65 ? (Math.random() < 0.45 ? 2 : 1) : 0;
+      for (let k = 0; k < burstCount; k++) {
+        const offset = k * (0.075 + Math.random() * 0.06);
+        const t = now + offset;
+        const osc = this.ctx.createOscillator();
+        const filter = this.ctx.createBiquadFilter();
+        const env = this.ctx.createGain();
+
+        // Warm thocky keycap resonance
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(340 + Math.random() * 140, t);
+        osc.frequency.exponentialRampToValueAtTime(110, t + 0.028);
+
+        filter.type = 'lowpass';
+        filter.frequency.setValueAtTime(920, t);
+
+        env.gain.setValueAtTime(0.0001, t);
+        env.gain.linearRampToValueAtTime(0.065, t + 0.003);
+        env.gain.exponentialRampToValueAtTime(0.0001, t + 0.032);
+
+        osc.connect(filter);
+        filter.connect(env);
+        env.connect(this.ambientGains.keyboard);
+        osc.start(t);
+        osc.stop(t + 0.036);
+      }
+    }
   }
 
   // --- Interactive Spatial Sound Effects (SFX) ---
@@ -478,7 +552,6 @@ class CafeSoundEngine {
     if (!ctx) return;
 
     const now = ctx.currentTime;
-    // Two-tone brass shopkeeper's chime (E5 -> G#5 -> B5)
     const notes = [659.25, 830.61, 987.77];
     notes.forEach((freq, idx) => {
       const osc = ctx.createOscillator();
@@ -503,7 +576,6 @@ class CafeSoundEngine {
     if (!ctx) return;
 
     const now = ctx.currentTime;
-    // Soft warm wooden thud + gentle harmonic interval when sitting down and opening laptop
     const freqs = [293.66, 440.0, 587.33];
     freqs.forEach((freq, idx) => {
       const osc = ctx.createOscillator();
@@ -528,7 +600,6 @@ class CafeSoundEngine {
     if (!ctx) return;
 
     const now = ctx.currentTime;
-    // Delicate ceramic cup & saucer clink
     [1860, 2480].forEach((freq, idx) => {
       const osc = ctx.createOscillator();
       const env = ctx.createGain();
@@ -546,13 +617,33 @@ class CafeSoundEngine {
     });
   }
 
+  public playWaveChime(): void {
+    if (!this.prefs.sfxEnabled || this.prefs.isMuted || this.prefs.quietMode) return;
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+
+    const now = ctx.currentTime;
+    [587.33, 880.0].forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const env = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, now + idx * 0.07);
+      env.gain.setValueAtTime(0.0001, now + idx * 0.07);
+      env.gain.linearRampToValueAtTime(0.025, now + idx * 0.07 + 0.01);
+      env.gain.exponentialRampToValueAtTime(0.0001, now + idx * 0.07 + 0.45);
+      osc.connect(env);
+      env.connect(ctx.destination);
+      osc.start(now + idx * 0.07);
+      osc.stop(now + idx * 0.07 + 0.48);
+    });
+  }
+
   public playTimerComplete(): void {
     if (!this.prefs.sfxEnabled || this.prefs.isMuted || this.prefs.quietMode) return;
     const ctx = this.ensureContext();
     if (!ctx) return;
 
     const now = ctx.currentTime;
-    // Warm resonant singing-bowl chord
     [523.25, 659.25, 783.99, 1046.5].forEach((freq, idx) => {
       const osc = ctx.createOscillator();
       const env = ctx.createGain();
