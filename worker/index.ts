@@ -199,6 +199,10 @@ export class CafeHubDurableObject {
   private providerLookup = new Map<string, string>();
   private sessions = new Map<string, SessionRecord>();
   private wsTokenToUser = new Map<string, string>();
+  private pendingOAuthFlows = new Map<
+    string,
+    { returnTo: string; codeVerifier: string; expiresAtMs: number }
+  >();
   private rooms = new Map<string, RoomState>();
   private sockets = new Map<WebSocket, WsClientAttachment>();
 
@@ -363,80 +367,100 @@ export class CafeHubDurableObject {
     return { session, user, identities: userIdentities };
   }
 
-  private async resolveGithubUserProfileAndEmail(
-    rawUsername: string,
-    customDisplayName?: string,
-    customEmail?: string,
-    customAvatarUrl?: string,
-    customProviderUserId?: string
+  private async exchangeGithubOAuthCode(
+    code: string,
+    codeVerifier: string,
+    redirectUri: string
   ) {
-    const username = sanitizeUsername(rawUsername) || 'eval-exec';
-    let providerUserId =
-      (customProviderUserId || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 48) ||
-      `github_${username.toLowerCase()}`;
-    let displayName =
-      (customDisplayName || '').trim() ||
-      (username.toLowerCase() === 'eval-exec' ? 'Eval Exec' : username);
-    let email: string | null = (customEmail || '').trim() || null;
-    let avatarUrl: string | null =
-      validateSafeAvatarUrl(customAvatarUrl) ||
-      `https://github.com/${username}.png?size=160`;
+    const clientId = (this.env.GITHUB_CLIENT_ID || '').trim();
+    const clientSecret = (this.env.GITHUB_CLIENT_SECRET || '').trim();
+    if (!clientId || !clientSecret) {
+      throw new Error('github_oauth_app_not_configured');
+    }
 
-    try {
-      const userResp = await fetch(
-        `https://api.github.com/users/${encodeURIComponent(username)}`,
-        {
+    const tokenResp = await fetch('https://github.com/login/oauth/access_token', {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'User-Agent': 'eval-exec-cafe-cloudflare/1.0',
+      },
+      body: JSON.stringify({
+        client_id: clientId,
+        client_secret: clientSecret,
+        code,
+        redirect_uri: redirectUri,
+        code_verifier: codeVerifier,
+      }),
+    });
+    if (!tokenResp.ok) {
+      throw new Error('github_token_exchange_failed');
+    }
+    const tokenData = (await tokenResp.json()) as Record<string, unknown>;
+    const accessToken =
+      typeof tokenData.access_token === 'string' ? tokenData.access_token.trim() : '';
+    if (!accessToken) {
+      throw new Error('github_access_token_missing');
+    }
+
+    const userResp = await fetch('https://api.github.com/user', {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'eval-exec-cafe-cloudflare/1.0',
+      },
+    });
+    if (!userResp.ok) {
+      throw new Error('github_user_profile_failed');
+    }
+    const userJson = (await userResp.json()) as Record<string, unknown>;
+    const providerUserId = String(userJson.id || '');
+    const username = sanitizeUsername(String(userJson.login || ''));
+    if (!providerUserId || !username) {
+      throw new Error('github_invalid_user_payload');
+    }
+
+    const displayName =
+      typeof userJson.name === 'string' && userJson.name.trim()
+        ? userJson.name.trim()
+        : username;
+    const avatarUrl =
+      typeof userJson.avatar_url === 'string'
+        ? validateSafeAvatarUrl(userJson.avatar_url)
+        : `https://github.com/${username}.png?size=160`;
+
+    let email: string | null =
+      typeof userJson.email === 'string' && userJson.email.trim()
+        ? userJson.email.trim()
+        : null;
+
+    // Fetch verified primary email from /user/emails if public profile email is hidden
+    if (!email) {
+      try {
+        const emailsResp = await fetch('https://api.github.com/user/emails', {
           headers: {
+            Authorization: `Bearer ${accessToken}`,
             Accept: 'application/vnd.github+json',
             'User-Agent': 'eval-exec-cafe-cloudflare/1.0',
           },
-        }
-      );
-      if (userResp.ok) {
-        const userJson = (await userResp.json()) as Record<string, unknown>;
-        if (userJson.id) providerUserId = String(userJson.id);
-        if (
-          !customDisplayName?.trim() &&
-          typeof userJson.name === 'string' &&
-          userJson.name.trim()
-        ) {
-          displayName = userJson.name.trim();
-        }
-        if (typeof userJson.avatar_url === 'string') {
-          avatarUrl = validateSafeAvatarUrl(userJson.avatar_url);
-        }
-        if (!email && typeof userJson.email === 'string' && userJson.email.trim()) {
-          email = userJson.email.trim();
-        }
-      }
-
-      // If public profile email is hidden, resolve email from public GitHub commit search
-      if (!email) {
-        const searchResp = await fetch(
-          `https://api.github.com/search/commits?q=author:${encodeURIComponent(username)}&sort=author-date&order=desc&per_page=1`,
-          {
-            headers: {
-              Accept: 'application/vnd.github+json',
-              'User-Agent': 'eval-exec-cafe-cloudflare/1.0',
-            },
-          }
-        );
-        if (searchResp.ok) {
-          const searchJson = (await searchResp.json()) as Record<string, any>;
-          const firstItem = searchJson?.items?.[0];
-          const authorEmail =
-            firstItem?.commit?.author?.email || firstItem?.commit?.committer?.email;
-          if (
-            typeof authorEmail === 'string' &&
-            authorEmail.includes('@') &&
-            !authorEmail.endsWith('noreply.github.com')
-          ) {
-            email = authorEmail.trim();
+        });
+        if (emailsResp.ok) {
+          const emailsList = (await emailsResp.json()) as Array<{
+            email?: string;
+            primary?: boolean;
+            verified?: boolean;
+          }>;
+          const primaryVerified =
+            emailsList.find((e) => e.primary && e.verified && e.email) ||
+            emailsList.find((e) => e.verified && e.email) ||
+            emailsList[0];
+          if (primaryVerified?.email) {
+            email = primaryVerified.email.trim();
           }
         }
+      } catch {
+        // Ignore if /user/emails scope was not granted
       }
-    } catch {
-      // Fallback to github.com/{username}.png
     }
 
     return {
@@ -444,7 +468,7 @@ export class CafeHubDurableObject {
       username,
       displayName,
       email,
-      avatarUrl: validateSafeAvatarUrl(avatarUrl),
+      avatarUrl,
       profileUrl: buildSafeProfileUrl(username),
     };
   }
@@ -511,63 +535,104 @@ export class CafeHubDurableObject {
       });
     }
 
-    // GitHub Profile Picture & Email Login (/api/auth/github/login)
-    if (url.pathname === '/api/auth/github/login' && req.method === 'POST') {
-      const body = (await req.json().catch(() => ({}))) as {
-        username?: string;
-        displayName?: string;
-        email?: string;
-        avatarUrl?: string;
-        providerUserId?: string;
-      };
-      const cleanUser = sanitizeUsername(body.username || '');
-      if (!cleanUser) {
-        return jsonResponse(req, { error: 'missing_github_username' }, 400);
-      }
-
-      const profile = await this.resolveGithubUserProfileAndEmail(
-        cleanUser,
-        body.displayName,
-        body.email,
-        body.avatarUrl,
-        body.providerUserId
-      );
-      const { session, user, identities } = this.completeGithubLogin(profile);
-      const cookie = `cafe_session=${session.sessionId}; HttpOnly; Path=/; Max-Age=604800; SameSite=Lax; Secure`;
-      return jsonResponse(
-        req,
-        {
-          status: 'authenticated',
-          authenticated: true,
-          user,
-          identities,
-          csrfToken: session.csrfToken,
-          wsToken: session.wsToken,
-          sessionId: session.sessionId,
-        },
-        200,
-        { 'Set-Cookie': cookie }
-      );
-    }
-
     // OAuth 2.0 + PKCE Redirect Start (/api/auth/oauth/github/start)
     if (url.pathname === '/api/auth/oauth/github/start' && req.method === 'GET') {
       const returnTo = url.searchParams.get('return_to') || 'https://cafe.eval-exec.com/';
-      const hint = sanitizeUsername(url.searchParams.get('login_hint') || 'eval-exec') || 'eval-exec';
+      const clientId = (this.env.GITHUB_CLIENT_ID || '').trim();
+      const clientSecret = (this.env.GITHUB_CLIENT_SECRET || '').trim();
 
-      const profile = await this.resolveGithubUserProfileAndEmail(hint);
-      const { session } = this.completeGithubLogin(profile);
+      if (!clientId || !clientSecret) {
+        const errTarget = new URL(returnTo);
+        errTarget.searchParams.set(
+          'auth_error',
+          'GitHub OAuth App (GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET) is not configured yet on cafe.eval-exec.com.'
+        );
+        return Response.redirect(errTarget.toString(), 302);
+      }
 
-      const target = new URL(returnTo);
-      target.searchParams.set('auth_session', session.sessionId);
-      const cookie = `cafe_session=${session.sessionId}; HttpOnly; Path=/; Max-Age=604800; SameSite=Lax; Secure`;
-      return new Response(null, {
-        status: 302,
-        headers: {
-          Location: target.toString(),
-          'Set-Cookie': cookie,
-        },
+      const nowMs = Date.now();
+      for (const [k, v] of this.pendingOAuthFlows.entries()) {
+        if (v.expiresAtMs < nowMs) this.pendingOAuthFlows.delete(k);
+      }
+
+      const state = randomToken('st');
+      const codeVerifier = randomToken('pkce') + randomToken('v');
+      const digest = await crypto.subtle.digest(
+        'SHA-256',
+        new TextEncoder().encode(codeVerifier)
+      );
+      const codeChallenge = btoa(String.fromCharCode(...new Uint8Array(digest)))
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=+$/, '');
+
+      this.pendingOAuthFlows.set(state, {
+        returnTo,
+        codeVerifier,
+        expiresAtMs: nowMs + 10 * 60 * 1000,
       });
+
+      const redirectUri = `${url.origin}/api/auth/oauth/github/callback`;
+      const ghAuthUrl = new URL('https://github.com/login/oauth/authorize');
+      ghAuthUrl.searchParams.set('client_id', clientId);
+      ghAuthUrl.searchParams.set('redirect_uri', redirectUri);
+      ghAuthUrl.searchParams.set('scope', 'read:user user:email');
+      ghAuthUrl.searchParams.set('state', state);
+      ghAuthUrl.searchParams.set('code_challenge', codeChallenge);
+      ghAuthUrl.searchParams.set('code_challenge_method', 'S256');
+
+      return Response.redirect(ghAuthUrl.toString(), 302);
+    }
+
+    // OAuth 2.0 + PKCE Callback (/api/auth/oauth/github/callback)
+    if (url.pathname === '/api/auth/oauth/github/callback' && req.method === 'GET') {
+      const state = url.searchParams.get('state') || '';
+      const code = url.searchParams.get('code') || '';
+      const errorParam = url.searchParams.get('error') || '';
+
+      const flow = this.pendingOAuthFlows.get(state);
+      this.pendingOAuthFlows.delete(state);
+
+      if (!flow || flow.expiresAtMs < Date.now()) {
+        return Response.redirect(
+          'https://cafe.eval-exec.com/?auth_error=Invalid+or+expired+OAuth+state',
+          302
+        );
+      }
+
+      if (errorParam || !code) {
+        const errTarget = new URL(flow.returnTo);
+        errTarget.searchParams.set('auth_error', errorParam || 'missing_oauth_code');
+        return Response.redirect(errTarget.toString(), 302);
+      }
+
+      try {
+        const redirectUri = `${url.origin}/api/auth/oauth/github/callback`;
+        const profile = await this.exchangeGithubOAuthCode(
+          code,
+          flow.codeVerifier,
+          redirectUri
+        );
+        const { session } = this.completeGithubLogin(profile);
+
+        const target = new URL(flow.returnTo);
+        target.searchParams.set('auth_session', session.sessionId);
+        const cookie = `cafe_session=${session.sessionId}; HttpOnly; Path=/; Max-Age=604800; SameSite=Lax; Secure`;
+        return new Response(null, {
+          status: 302,
+          headers: {
+            Location: target.toString(),
+            'Set-Cookie': cookie,
+          },
+        });
+      } catch (err) {
+        const errTarget = new URL(flow.returnTo);
+        errTarget.searchParams.set(
+          'auth_error',
+          err instanceof Error ? err.message : 'oauth_exchange_failed'
+        );
+        return Response.redirect(errTarget.toString(), 302);
+      }
     }
 
     // Update Preferences (/api/auth/preferences)
@@ -937,7 +1002,7 @@ export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
     if (url.pathname.startsWith('/api/') || url.pathname === '/ws') {
-      const id = env.CAFE_HUB.idFromName('global-eval-exec-cafe-hub-v2');
+      const id = env.CAFE_HUB.idFromName('global-eval-exec-cafe-hub-v3');
       const stub = env.CAFE_HUB.get(id);
       return stub.fetch(req);
     }

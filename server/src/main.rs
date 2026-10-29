@@ -131,14 +131,9 @@ async fn main() {
         )
         .route("/api/auth/oauth/:provider/start", get(oauth_start_handler))
         .route(
-            "/api/auth/oauth/:provider/authorize",
-            get(oauth_sandbox_authorize_page).post(oauth_sandbox_authorize_submit),
-        )
-        .route(
             "/api/auth/oauth/:provider/callback",
             get(oauth_callback_handler),
         )
-        .route("/api/auth/github/login", post(github_login_handler))
         .route("/ws", get(ws_handler))
         .layer(CorsLayer::permissive())
         .with_state(hub);
@@ -264,7 +259,7 @@ async fn oauth_start_handler(
                         .query_pairs_mut()
                         .append_pair("client_id", client_id.trim())
                         .append_pair("redirect_uri", &callback_uri)
-                        .append_pair("scope", "read:user")
+                        .append_pair("scope", "read:user user:email")
                         .append_pair("state", &flow.state)
                         .append_pair("code_challenge", &flow.code_challenge)
                         .append_pair("code_challenge_method", "S256");
@@ -274,244 +269,12 @@ async fn oauth_start_handler(
         }
     }
 
-    // Redirect to the built-in standards-compliant OAuth 2.0 + PKCE Authorization Server
-    let mut local_auth_url = Url::parse(&format!(
-        "{}/api/auth/oauth/{}/authorize",
-        server_base.trim_end_matches('/'),
-        provider.as_str()
-    ))
-    .unwrap();
-    local_auth_url
-        .query_pairs_mut()
-        .append_pair("response_type", "code")
-        .append_pair("client_id", "eval-exec-cafe-oauth")
-        .append_pair("redirect_uri", &callback_uri)
-        .append_pair("scope", "read:user")
-        .append_pair("state", &flow.state)
-        .append_pair("code_challenge", &flow.code_challenge)
-        .append_pair("code_challenge_method", "S256");
-    if let Some(hint) = q.login_hint.as_deref() {
-        if !hint.trim().is_empty() {
-            local_auth_url
-                .query_pairs_mut()
-                .append_pair("login_hint", hint.trim());
-        }
-    }
-
-    Redirect::to(local_auth_url.as_str()).into_response()
-}
-
-#[derive(Deserialize)]
-struct SandboxAuthorizeQuery {
-    state: String,
-    code_challenge: String,
-    code_challenge_method: Option<String>,
-    redirect_uri: Option<String>,
-    login_hint: Option<String>,
-}
-
-async fn oauth_sandbox_authorize_page(
-    Path(provider_str): Path<String>,
-    State(hub): State<Arc<CafeHub>>,
-    Query(q): Query<SandboxAuthorizeQuery>,
-) -> Response {
-    let Some(provider) = SocialProvider::from_segment(&provider_str) else {
-        return (StatusCode::BAD_REQUEST, "Unsupported provider").into_response();
-    };
-    if q.code_challenge_method.as_deref().unwrap_or("S256") != "S256" {
-        return (StatusCode::BAD_REQUEST, "PKCE S256 required").into_response();
-    }
-
-    // If login_hint was passed, immediately authorize and redirect to callback
-    if let Some(hint) = q.login_hint.as_deref() {
-        let clean_hint = sanitize_username(hint);
-        if !clean_hint.is_empty() {
-            return issue_sandbox_authorization_and_redirect(
-                hub,
-                provider,
-                &q.state,
-                &q.code_challenge,
-                &clean_hint,
-                None,
-            )
-            .await;
-        }
-    }
-
-    let provider_title = "GitHub";
-    let default_user = "eval-exec";
-    let scope_desc = "Read-only public profile (id, username, display name, avatar_url). No repository, email, or write access.";
-
-    let html = format!(
-        r#"<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Sign in with {provider_title} — Eval Exec's Cafe OAuth 2.0 + PKCE</title>
-  <style>
-    * {{ box-sizing: border-box; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif; }}
-    body {{
-      margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
-      background: radial-gradient(circle at 50% 25%, #2D1F18 0%, #140E0B 100%);
-      color: #F7EDE2; padding: 20px;
-    }}
-    .card {{
-      width: 100%; max-width: 440px; background: rgba(31, 21, 16, 0.96);
-      border: 1px solid rgba(212, 140, 70, 0.35); border-radius: 22px;
-      padding: 28px; box-shadow: 0 24px 60px rgba(0,0,0,0.65);
-    }}
-    .badge {{
-      display: inline-flex; align-items: center; gap: 8px; font-size: 11px;
-      text-transform: uppercase; letter-spacing: 0.1em; color: #F3B664;
-      background: rgba(243, 182, 100, 0.12); border: 1px solid rgba(243, 182, 100, 0.3);
-      padding: 4px 10px; border-radius: 999px; margin-bottom: 12px;
-    }}
-    h1 {{ font-size: 21px; margin: 0 0 6px 0; color: #FFF8F0; }}
-    p {{ font-size: 13px; line-height: 1.5; color: #C9B39B; margin: 0 0 18px 0; }}
-    label {{ display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: #D8C2AA; margin-bottom: 6px; font-weight: 600; }}
-    input {{
-      width: 100%; padding: 11px 14px; border-radius: 12px;
-      border: 1px solid rgba(212, 140, 70, 0.35); background: rgba(15, 10, 8, 0.75);
-      color: #F7EDE2; font-size: 14px; margin-bottom: 14px; outline: none;
-    }}
-    input:focus {{ border-color: #F3B664; }}
-    .presets {{ display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }}
-    .preset-btn {{
-      background: rgba(255,255,255,0.05); border: 1px solid rgba(212, 140, 70, 0.22);
-      color: #E5D1B8; border-radius: 999px; padding: 4px 10px; font-size: 11px; cursor: pointer;
-    }}
-    .preset-btn:hover {{ border-color: #F3B664; color: #FFF; }}
-    .scope-box {{
-      background: rgba(15, 10, 8, 0.55); border: 1px solid rgba(212, 140, 70, 0.2);
-      border-radius: 12px; padding: 10px 12px; font-size: 11.5px; color: #B8A28B; margin-bottom: 18px;
-    }}
-    .actions {{ display: flex; gap: 10px; }}
-    .btn-primary {{
-      flex: 1; padding: 12px 16px; border-radius: 12px; border: none;
-      background: linear-gradient(135deg, #E29642 0%, #C47122 100%);
-      color: #1A110B; font-weight: 700; font-size: 13.5px; cursor: pointer;
-    }}
-    .btn-cancel {{
-      padding: 12px 16px; border-radius: 12px; border: 1px solid rgba(212, 140, 70, 0.28);
-      background: transparent; color: #C9B39B; font-size: 13px; text-decoration: none; display: inline-flex; align-items: center;
-    }}
-  </style>
-</head>
-<body>
-  <div class="card">
-    <div class="badge">OAuth 2.0 • PKCE (S256) Verified</div>
-    <h1>Continue with {provider_title}</h1>
-    <p>Sign in to <strong>Eval Exec's Cafe</strong> with your {provider_title} identity to display your real profile picture and claim seats in the café.</p>
-    <form method="POST" action="/api/auth/oauth/{provider_slug}/authorize">
-      <input type="hidden" name="state" value="{state}" />
-      <input type="hidden" name="code_challenge" value="{code_challenge}" />
-      <label for="username">{provider_title} Username</label>
-      <input id="username" name="username" value="{default_user}" required placeholder="e.g. eval-exec" />
-      <div class="presets">
-        <button type="button" class="preset-btn" onclick="document.getElementById('username').value='eval-exec'; document.getElementById('display_name').value='Eval Exec';">@eval-exec</button>
-        <button type="button" class="preset-btn" onclick="document.getElementById('username').value='torvalds'; document.getElementById('display_name').value='Linus Torvalds';">@torvalds</button>
-        <button type="button" class="preset-btn" onclick="document.getElementById('username').value='gaearon'; document.getElementById('display_name').value='Dan Abramov';">@gaearon</button>
-        <button type="button" class="preset-btn" onclick="document.getElementById('username').value='yyx990803'; document.getElementById('display_name').value='Evan You';">@yyx990803</button>
-      </div>
-      <label for="display_name">Display Name (Optional)</label>
-      <input id="display_name" name="display_name" value="Eval Exec" placeholder="Display Name" />
-      <div class="scope-box">
-        <strong>Permissions requested:</strong><br/>{scope_desc}
-      </div>
-      <div class="actions">
-        <a class="btn-cancel" href="/api/auth/oauth/{provider_slug}/callback?error=access_denied&state={state}">Cancel</a>
-        <button type="submit" class="btn-primary">Authorize {provider_title}</button>
-      </div>
-    </form>
-  </div>
-</body>
-</html>"#,
-        provider_title = provider_title,
-        provider_slug = provider.as_str(),
-        state = q.state,
-        code_challenge = q.code_challenge,
-        default_user = default_user,
-        scope_desc = scope_desc,
+    let err_url = append_Redirect_param(
+        &safe_return,
+        "auth_error",
+        "GitHub OAuth App (GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET) is not configured yet.",
     );
-
-    Html(html).into_response()
-}
-
-#[derive(Deserialize)]
-struct SandboxAuthorizeForm {
-    state: String,
-    code_challenge: String,
-    username: String,
-    display_name: Option<String>,
-}
-
-async fn oauth_sandbox_authorize_submit(
-    Path(provider_str): Path<String>,
-    State(hub): State<Arc<CafeHub>>,
-    axum::Form(form): axum::Form<SandboxAuthorizeForm>,
-) -> Response {
-    let Some(provider) = SocialProvider::from_segment(&provider_str) else {
-        return (StatusCode::BAD_REQUEST, "Unsupported provider").into_response();
-    };
-    issue_sandbox_authorization_and_redirect(
-        hub,
-        provider,
-        &form.state,
-        &form.code_challenge,
-        &form.username,
-        form.display_name.as_deref(),
-    )
-    .await
-}
-
-async fn issue_sandbox_authorization_and_redirect(
-    hub: Arc<CafeHub>,
-    provider: SocialProvider,
-    state: &str,
-    code_challenge: &str,
-    raw_username: &str,
-    raw_display_name: Option<&str>,
-) -> Response {
-    let username = sanitize_username(raw_username);
-    if username.is_empty() {
-        return Redirect::to(&format!(
-            "/api/auth/oauth/{}/callback?error=invalid_request&state={}",
-            provider.as_str(),
-            urlencoding_simple(state)
-        ))
-        .into_response();
-    }
-
-    // Attempt live public GitHub API profile resolution for real GitHub user ID, name, avatar_url, and email
-    let (resolved_id, resolved_name, resolved_email, resolved_avatar) =
-        resolve_github_profile_and_email(&username, raw_display_name).await;
-
-    let profile = ExternalProviderProfile {
-        provider,
-        provider_user_id: resolved_id,
-        username: username.clone(),
-        display_name: resolved_name,
-        email: resolved_email,
-        avatar_url: resolved_avatar,
-        profile_url: build_safe_profile_url(provider, &username),
-        access_token: format!("oauth_tok_{}_{}", provider.as_str(), now_ms()),
-        refresh_token: None,
-        expires_at_ms: None,
-    };
-
-    let code = {
-        let mut auth = hub.auth.write().await;
-        auth.issue_sandbox_code(provider, code_challenge.to_string(), profile, now_ms())
-    };
-
-    let callback_url = format!(
-        "/api/auth/oauth/{}/callback?code={}&state={}",
-        provider.as_str(),
-        urlencoding_simple(&code),
-        urlencoding_simple(state)
-    );
-    Redirect::to(&callback_url).into_response()
+    Redirect::to(&err_url).into_response()
 }
 
 #[derive(Deserialize)]
@@ -688,11 +451,43 @@ async fn exchange_live_oauth_code(
                 .filter(|s| !s.trim().is_empty())
                 .unwrap_or(&login)
                 .to_string();
-            let email = user_resp
+            let mut email = user_resp
                 .get("email")
                 .and_then(|v| v.as_str())
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty());
+
+            if email.is_none() {
+                if let Ok(emails_resp) = client
+                    .get("https://api.github.com/user/emails")
+                    .header(header::AUTHORIZATION, format!("Bearer {}", access_token))
+                    .header(header::ACCEPT, "application/vnd.github+json")
+                    .send()
+                    .await
+                {
+                    if emails_resp.status().is_success() {
+                        if let Ok(serde_json::Value::Array(emails)) =
+                            emails_resp.json::<serde_json::Value>().await
+                        {
+                            for item in &emails {
+                                let is_primary =
+                                    item.get("primary").and_then(|v| v.as_bool()).unwrap_or(false);
+                                let is_verified =
+                                    item.get("verified").and_then(|v| v.as_bool()).unwrap_or(false);
+                                if is_primary && is_verified {
+                                    if let Some(em) = item.get("email").and_then(|v| v.as_str()) {
+                                        if !em.trim().is_empty() {
+                                            email = Some(em.trim().to_string());
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             let avatar_url = validate_safe_avatar_url(
                 user_resp.get("avatar_url").and_then(|v| v.as_str()),
             );
@@ -710,192 +505,6 @@ async fn exchange_live_oauth_code(
                 expires_at_ms: None,
             })
         }
-    }
-}
-
-async fn resolve_github_profile_and_email(
-    username: &str,
-    raw_display_name: Option<&str>,
-) -> (String, String, Option<String>, Option<String>) {
-    let mut resolved_id = format!("github_{}", username.to_ascii_lowercase());
-    let mut resolved_name = raw_display_name
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| username.to_string());
-    let mut resolved_email: Option<String> = None;
-    let mut resolved_avatar = Some(format!("https://github.com/{}.png?size=160", username));
-
-    if let Ok(client) = reqwest::Client::builder()
-        .user_agent("eval-exec-cafe-oauth/1.0")
-        .timeout(std::time::Duration::from_millis(3200))
-        .build()
-    {
-        if let Ok(resp) = client
-            .get(format!("https://api.github.com/users/{}", username))
-            .send()
-            .await
-        {
-            if resp.status().is_success() {
-                if let Ok(gh_json) = resp.json::<serde_json::Value>().await {
-                    if let Some(id_num) = gh_json.get("id").and_then(|v| v.as_u64()) {
-                        resolved_id = id_num.to_string();
-                    }
-                    if raw_display_name.map(|s| s.trim().is_empty()).unwrap_or(true) {
-                        if let Some(name_str) = gh_json.get("name").and_then(|v| v.as_str()) {
-                            if !name_str.trim().is_empty() {
-                                resolved_name = name_str.trim().to_string();
-                            }
-                        }
-                    }
-                    if let Some(em) = gh_json.get("email").and_then(|v| v.as_str()) {
-                        if !em.trim().is_empty() {
-                            resolved_email = Some(em.trim().to_string());
-                        }
-                    }
-                    if let Some(av) = gh_json.get("avatar_url").and_then(|v| v.as_str()) {
-                        resolved_avatar = validate_safe_avatar_url(Some(av));
-                    }
-                }
-            }
-        }
-
-        // If public profile email is null, inspect public GitHub commit search for commit author email
-        if resolved_email.is_none() {
-            if let Ok(search_resp) = client
-                .get(format!(
-                    "https://api.github.com/search/commits?q=author:{}&sort=author-date&order=desc&per_page=1",
-                    username
-                ))
-                .header(header::ACCEPT, "application/vnd.github+json")
-                .send()
-                .await
-            {
-                if search_resp.status().is_success() {
-                    if let Ok(search_json) = search_resp.json::<serde_json::Value>().await {
-                        if let Some(first_item) = search_json
-                            .get("items")
-                            .and_then(|i| i.as_array())
-                            .and_then(|arr| arr.first())
-                        {
-                            let candidate = first_item
-                                .get("commit")
-                                .and_then(|c| c.get("author"))
-                                .and_then(|a| a.get("email"))
-                                .and_then(|e| e.as_str())
-                                .or_else(|| {
-                                    first_item
-                                        .get("commit")
-                                        .and_then(|c| c.get("committer"))
-                                        .and_then(|a| a.get("email"))
-                                        .and_then(|e| e.as_str())
-                                });
-                            if let Some(em) = candidate {
-                                let trimmed = em.trim();
-                                if trimmed.contains('@')
-                                    && !trimmed.ends_with("noreply.github.com")
-                                {
-                                    resolved_email = Some(trimmed.to_string());
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    (resolved_id, resolved_name, resolved_email, resolved_avatar)
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct GithubLoginPayload {
-    username: String,
-    display_name: Option<String>,
-}
-
-async fn github_login_handler(
-    State(hub): State<Arc<CafeHub>>,
-    Json(payload): Json<GithubLoginPayload>,
-) -> Response {
-    let username = sanitize_username(&payload.username);
-    if username.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "invalid_username" })),
-        )
-            .into_response();
-    }
-
-    let (resolved_id, resolved_name, resolved_email, resolved_avatar) =
-        resolve_github_profile_and_email(&username, payload.display_name.as_deref()).await;
-
-    let profile = ExternalProviderProfile {
-        provider: SocialProvider::Github,
-        provider_user_id: resolved_id,
-        username: username.clone(),
-        display_name: resolved_name,
-        email: resolved_email,
-        avatar_url: resolved_avatar,
-        profile_url: build_safe_profile_url(SocialProvider::Github, &username),
-        access_token: format!("gh_pub_{}_{}", username, now_ms()),
-        refresh_token: None,
-        expires_at_ms: None,
-    };
-
-    finalize_github_profile_session(&hub, profile).await
-}
-
-async fn finalize_github_profile_session(
-    hub: &Arc<CafeHub>,
-    profile: ExternalProviderProfile,
-) -> Response {
-    let ts = now_ms();
-    let outcome = {
-        let mut auth = hub.auth.write().await;
-        auth.complete_oauth_authentication(OAuthMode::Login, profile, ts)
-    };
-
-    match outcome {
-        Ok((session, user, identities)) => {
-            let bundle = {
-                let auth = hub.auth.read().await;
-                auth.resolve_public_identity_bundle(&user.id)
-            };
-            if let Some((u, av_url, primary_id, public_ids)) = bundle {
-                let mut rooms = hub.rooms.write().await;
-                for (room_id, room) in rooms.iter_mut() {
-                    if let Some(snap) = room.sync_authenticated_user(
-                        &u,
-                        av_url.clone(),
-                        primary_id.clone(),
-                        public_ids.clone(),
-                        ts,
-                    ) {
-                        let _ = hub.tx.send((room_id.clone(), ServerEvent::Snapshot(snap)));
-                    }
-                }
-            }
-            let cookie = build_session_cookie(&session.session_id, 7 * 24 * 3600);
-            (
-                [(header::SET_COOKIE, cookie)],
-                Json(json!({
-                    "status": "authenticated",
-                    "authenticated": true,
-                    "user": user,
-                    "identities": identities,
-                    "csrfToken": session.csrf_token,
-                    "wsToken": session.ws_token,
-                    "sessionId": session.session_id,
-                })),
-            )
-                .into_response()
-        }
-        Err(err) => (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": format!("{:?}", err) })),
-        )
-            .into_response(),
     }
 }
 

@@ -1,4 +1,3 @@
-import { request as octokitRequest } from '@octokit/request';
 import {
   ActivityStatus,
   AvatarConfig,
@@ -122,143 +121,13 @@ export function buildServerOAuthStartUrl(params: {
   returnTo: string;
   sessionId?: string;
   csrfToken?: string;
-  loginHint?: string;
 }): string {
   const u = new URL(`${getApiBaseUrl()}/api/auth/oauth/${params.provider}/start`);
   u.searchParams.set('mode', params.mode);
   u.searchParams.set('return_to', params.returnTo);
   if (params.sessionId) u.searchParams.set('session_id', params.sessionId);
   if (params.csrfToken) u.searchParams.set('csrf_token', params.csrfToken);
-  if (params.loginHint) u.searchParams.set('login_hint', params.loginHint);
   return u.toString();
-}
-
-/**
- * Resolves a GitHub user's profile picture (`avatarUrl`) and email (`email`)
- * via Cloudflare Worker `/api/auth/github/login` and Octokit (`GET /users/{username}` + public events).
- */
-export async function resolvePublicSocialProfile(
-  provider: SocialProvider,
-  rawUsername: string,
-  customDisplayName?: string
-): Promise<{
-  provider: SocialProvider;
-  providerUserId: string;
-  username: string;
-  displayName: string;
-  email: string | null;
-  avatarUrl: string | null;
-  profileUrl: string;
-  pkceChallenge: string;
-  serverSession?: AuthSessionResponse;
-}> {
-  const username = rawUsername.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 39);
-  if (!username) {
-    throw new Error('Please enter a valid GitHub username.');
-  }
-
-  // Generate Web Crypto PKCE S256 verifier & challenge
-  const verifierBytes = new Uint8Array(32);
-  window.crypto.getRandomValues(verifierBytes);
-  const verifier = Array.from(verifierBytes, (b) => b.toString(16).padStart(2, '0')).join('');
-  const digest = await window.crypto.subtle.digest(
-    'SHA-256',
-    new TextEncoder().encode(verifier)
-  );
-  const pkceChallenge = btoa(String.fromCharCode(...new Uint8Array(digest)))
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=+$/, '');
-
-  let providerUserId = `${provider}_${username.toLowerCase()}`;
-  let displayName = (customDisplayName || '').trim() || username;
-  let email: string | null = null;
-  let avatarUrl: string | null = `https://github.com/${username}.png?size=160`;
-
-  try {
-    const resp = await octokitRequest('GET /users/{username}', {
-      username,
-    });
-    const data = resp.data;
-    if (data.id) providerUserId = String(data.id);
-    if (!customDisplayName?.trim() && typeof data.name === 'string' && data.name.trim()) {
-      displayName = data.name.trim();
-    }
-    if (typeof data.avatar_url === 'string') {
-      avatarUrl = validateSafeAvatarUrl(data.avatar_url);
-    }
-    if (typeof data.email === 'string' && data.email.trim()) {
-      email = data.email.trim();
-    }
-
-    if (!email) {
-      const searchResp = await fetch(
-        `https://api.github.com/search/commits?q=author:${encodeURIComponent(username)}&sort=author-date&order=desc&per_page=1`,
-        { headers: { Accept: 'application/vnd.github+json' } }
-      );
-      if (searchResp.ok) {
-        const searchJson = (await searchResp.json()) as Record<string, any>;
-        const firstItem = searchJson?.items?.[0];
-        const authorEmail =
-          firstItem?.commit?.author?.email || firstItem?.commit?.committer?.email;
-        if (
-          typeof authorEmail === 'string' &&
-          authorEmail.includes('@') &&
-          !authorEmail.endsWith('noreply.github.com')
-        ) {
-          email = authorEmail.trim();
-        }
-      }
-    }
-  } catch {
-    // Fallback to server resolution or github.com/{username}.png avatar URL
-  }
-
-  // Register session with Cloudflare Worker / API endpoint with resolved profile picture & email
-  try {
-    const apiRes = await fetch(`${getApiBaseUrl()}/api/auth/github/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify({
-        username,
-        displayName,
-        email: email || undefined,
-        avatarUrl: avatarUrl || undefined,
-        providerUserId,
-      }),
-    });
-    if (apiRes.ok) {
-      const sess = (await apiRes.json()) as AuthSessionResponse;
-      const ident = sess.identities?.[0];
-      if (sess.authenticated && sess.user && ident) {
-        return {
-          provider: 'github',
-          providerUserId: ident.providerUserId,
-          username: ident.username,
-          displayName: sess.user.displayName,
-          email: ident.email || email || null,
-          avatarUrl: validateSafeAvatarUrl(ident.avatarUrl || avatarUrl),
-          profileUrl: ident.profileUrl,
-          pkceChallenge,
-          serverSession: sess,
-        };
-      }
-    }
-  } catch {
-    // Offline / static mesh fallback
-  }
-
-  return {
-    provider,
-    providerUserId,
-    username,
-    displayName,
-    email,
-    avatarUrl: validateSafeAvatarUrl(avatarUrl),
-    profileUrl: buildSafeProfileUrl(provider, username),
-    pkceChallenge,
-  };
 }
 
 export class CafeMultiplayerClient {

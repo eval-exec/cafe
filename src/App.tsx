@@ -37,11 +37,11 @@ import {
   VisitorProfileCardModal,
 } from './components/ui/VisitorProfileCardModal';
 import {
+  buildServerOAuthStartUrl,
   ConnectionStatus,
   fetchAuthSession,
   getApiBaseUrl,
   multiplayerClient,
-  resolvePublicSocialProfile,
   validateSafeAvatarUrl,
 } from './network/multiplayerClient';
 import {
@@ -777,120 +777,20 @@ export function App() {
     setIsAvatarModalOpen(true);
   };
 
-  // Resolve GitHub User Profile Picture and Email
+  // Redirect to GitHub OAuth 2.0 + PKCE (S256) Login or Account Linking
   const handleStartOAuth = async (
     provider: SocialProvider,
-    mode: 'login' | 'link',
-    usernameHint?: string,
-    displayNameHint?: string
+    mode: 'login' | 'link'
   ) => {
-    const resolved = await resolvePublicSocialProfile(
+    const returnTo = window.location.href.split('#')[0];
+    const oauthUrl = buildServerOAuthStartUrl({
       provider,
-      usernameHint || 'eval-exec',
-      displayNameHint
-    );
-
-    if (
-      resolved.serverSession &&
-      resolved.serverSession.authenticated &&
-      resolved.serverSession.user &&
-      resolved.serverSession.identities
-    ) {
-      const sess = resolved.serverSession;
-      const u = sess.user!;
-      const idents = sess.identities!;
-      setProfile((prev) => ({
-        ...prev,
-        userId: u.id,
-        authToken: sess.wsToken || prev.authToken,
-        csrfToken: sess.csrfToken,
-        sessionId: sess.sessionId,
-        isAuthenticated: true,
-        displayName: u.displayName,
-        preferredIdentityId: u.preferredIdentityId,
-        preferredAvatarIdentityId:
-          u.preferredAvatarIdentityId !== undefined
-            ? u.preferredAvatarIdentityId
-            : u.preferredIdentityId,
-        identities: idents,
-      }));
-      const primaryEmail = idents[0]?.email || resolved.email;
-      setCompletionBanner(
-        `Signed in as ${u.displayName} (@${idents[0]?.username || resolved.username}${primaryEmail ? ` • ${primaryEmail}` : ''})!`
-      );
-      window.setTimeout(() => setCompletionBanner(null), 4000);
-      setAuthModalNotice(null);
-      return;
-    }
-
-    const newIdentId = `id_${provider}_${resolved.providerUserId}`;
-
-    // Account-linking conflict check against existing active visitors in the room
-    const conflictingVisitor = visitors.find(
-      (v) =>
-        v.userId !== profile.userId &&
-        (v.primaryIdentity?.id === newIdentId ||
-          v.linkedIdentities?.some((li) => li.id === newIdentId))
-    );
-    if (conflictingVisitor) {
-      throw new Error(
-        `@${resolved.username} (GitHub) is already linked to another active café visitor.`
-      );
-    }
-
-    if (mode === 'link' && profile.isAuthenticated) {
-      const newIdent: SocialIdentity = {
-        id: newIdentId,
-        userId: profile.userId,
-        provider: resolved.provider,
-        providerUserId: resolved.providerUserId,
-        username: resolved.username,
-        displayName: resolved.displayName,
-        email: resolved.email,
-        avatarUrl: resolved.avatarUrl,
-        profileUrl: resolved.profileUrl,
-        isPublic: true,
-      };
-      const filtered = profile.identities.filter((i) => i.id !== newIdentId);
-      const nextIdentities = [...filtered, newIdent];
-      setProfile((prev) => ({
-        ...prev,
-        identities: nextIdentities,
-      }));
-      setCompletionBanner(
-        `Linked @${resolved.username}${resolved.email ? ` (${resolved.email})` : ''} to your café account!`
-      );
-      window.setTimeout(() => setCompletionBanner(null), 4000);
-    } else {
-      // Login mode: use stable internal user ID derived from GitHub identity
-      const internalUserId = `usr_${provider}_${resolved.providerUserId}`;
-      const newIdent: SocialIdentity = {
-        id: newIdentId,
-        userId: internalUserId,
-        provider: resolved.provider,
-        providerUserId: resolved.providerUserId,
-        username: resolved.username,
-        displayName: resolved.displayName,
-        email: resolved.email,
-        avatarUrl: resolved.avatarUrl,
-        profileUrl: resolved.profileUrl,
-        isPublic: true,
-      };
-      setProfile((prev) => ({
-        ...prev,
-        userId: internalUserId,
-        isAuthenticated: true,
-        displayName: resolved.displayName,
-        preferredIdentityId: newIdentId,
-        preferredAvatarIdentityId: newIdentId,
-        identities: [newIdent],
-      }));
-      setCompletionBanner(
-        `Signed in as ${resolved.displayName} (@${resolved.username}${resolved.email ? ` • ${resolved.email}` : ''})!`
-      );
-      window.setTimeout(() => setCompletionBanner(null), 4000);
-    }
-    setAuthModalNotice(null);
+      mode,
+      returnTo,
+      sessionId: profile.sessionId,
+      csrfToken: profile.csrfToken,
+    });
+    window.location.assign(oauthUrl);
   };
 
   // Update Profile & Sync with Server if Session Active

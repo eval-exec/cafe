@@ -30,9 +30,7 @@ interface AvatarProfileModalProps {
   onUpdateProfile: (next: UserProfile) => void;
   onStartOAuth: (
     provider: SocialProvider,
-    mode: 'login' | 'link',
-    usernameHint?: string,
-    displayNameHint?: string
+    mode: 'login' | 'link'
   ) => Promise<void>;
   onDisconnectIdentity: (identityId: string) => Promise<void>;
   onSignOut: () => Promise<void>;
@@ -103,10 +101,6 @@ export const AvatarProfileModal: React.FC<AvatarProfileModalProps> = ({
   const [activeTab, setActiveTab] = useState<'identity' | 'character'>(
     profile.isAuthenticated ? 'identity' : 'identity'
   );
-  const [oauthStepProvider, setOauthStepProvider] = useState<SocialProvider | null>(null);
-  const [oauthStepMode, setOauthStepMode] = useState<'login' | 'link'>('login');
-  const [usernameInput, setUsernameInput] = useState('eval-exec');
-  const [displayNameInput, setDisplayNameInput] = useState('Eval Exec');
   const [isSubmittingAuth, setIsSubmittingAuth] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
 
@@ -119,38 +113,17 @@ export const AvatarProfileModal: React.FC<AvatarProfileModalProps> = ({
 
   const linkedGithub = profile.identities.find((i) => i.provider === 'github');
 
-  const handleOpenProviderOAuth = (
+  const handleOpenProviderOAuth = async (
     provider: SocialProvider,
     mode: 'login' | 'link'
   ) => {
     setLocalError(null);
-    setOauthStepProvider(provider);
-    setOauthStepMode(mode);
-    setUsernameInput(linkedGithub?.username || 'eval-exec');
-    setDisplayNameInput(profile.displayName || 'Eval Exec');
-  };
-
-  const handleConfirmOAuth = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!oauthStepProvider) return;
-    const cleanHandle = usernameInput.replace(/^@/, '').trim();
-    if (!cleanHandle) {
-      setLocalError('Please enter a valid username.');
-      return;
-    }
     setIsSubmittingAuth(true);
-    setLocalError(null);
     try {
-      await onStartOAuth(
-        oauthStepProvider,
-        oauthStepMode,
-        cleanHandle,
-        displayNameInput.trim() || cleanHandle
-      );
-      setOauthStepProvider(null);
+      await onStartOAuth(provider, mode);
     } catch (err) {
       setLocalError(
-        err instanceof Error ? err.message : 'Authentication failed. Please try again.'
+        err instanceof Error ? err.message : 'GitHub OAuth redirect failed. Please try again.'
       );
     } finally {
       setIsSubmittingAuth(false);
@@ -244,123 +217,30 @@ export const AvatarProfileModal: React.FC<AvatarProfileModalProps> = ({
 
         {activeTab === 'identity' ? (
           <div className="mt-5 space-y-5">
-            {/* OAuth 2.0 + PKCE Interactive Step (when user clicks Continue with GitHub or Connect Account) */}
-            {oauthStepProvider ? (
-              <form
-                onSubmit={handleConfirmOAuth}
-                className="p-4 rounded-2xl bg-black/45 border border-amber-400/35 space-y-3.5"
-              >
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <span className="w-7 h-7 rounded-lg bg-amber-500/20 border border-amber-400/35 flex items-center justify-center text-amber-200">
-                      <ProviderIcon
-                        provider={oauthStepProvider}
-                        className="w-4 h-4"
-                      />
-                    </span>
-                    <div>
-                      <h3 className="text-xs font-bold uppercase tracking-wider text-amber-200">
-                        {oauthStepMode === 'link' ? 'Link' : 'Continue with'} GitHub
-                      </h3>
-                      <p className="text-[11px] text-amber-200/65">
-                        OAuth 2.0 Authorization Code + PKCE (S256)
-                      </p>
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setOauthStepProvider(null)}
-                    className="text-xs text-amber-200/60 hover:text-amber-100"
-                  >
-                    Cancel
-                  </button>
-                </div>
-
-                <div>
-                  <label className="block text-[11px] font-semibold uppercase tracking-wider text-amber-200/80 mb-1">
-                    GitHub Username
-                  </label>
-                  <input
-                    type="text"
-                    value={usernameInput}
-                    onChange={(e) => setUsernameInput(e.target.value)}
-                    placeholder="eval-exec"
-                    required
-                    className="w-full px-3.5 py-2 rounded-xl bg-black/50 border border-amber-300/30 text-sm text-amber-50 focus:outline-none focus:border-amber-400"
-                  />
-                  <div className="flex items-center gap-1.5 mt-2 flex-wrap">
-                    <span className="text-[10px] text-amber-200/55">Quick presets:</span>
-                    {[
-                      { u: 'eval-exec', n: 'Eval Exec' },
-                      { u: 'torvalds', n: 'Linus Torvalds' },
-                      { u: 'gaearon', n: 'Dan Abramov' },
-                      { u: 'yyx990803', n: 'Evan You' },
-                    ].map((preset) => (
-                      <button
-                        key={preset.u}
-                        type="button"
-                        onClick={() => {
-                          setUsernameInput(preset.u);
-                          setDisplayNameInput(preset.n);
-                        }}
-                        className="text-[10px] px-2 py-0.5 rounded-full bg-white/5 hover:bg-amber-500/20 border border-amber-200/20 text-amber-200"
-                      >
-                        @{preset.u}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-[11px] font-semibold uppercase tracking-wider text-amber-200/80 mb-1">
-                    Display Name in Café
-                  </label>
-                  <input
-                    type="text"
-                    value={displayNameInput}
-                    onChange={(e) => setDisplayNameInput(e.target.value)}
-                    placeholder="Eval Exec"
-                    className="w-full px-3.5 py-2 rounded-xl bg-black/50 border border-amber-300/30 text-sm text-amber-50 focus:outline-none focus:border-amber-400"
-                  />
-                </div>
-
-                <div className="p-2.5 rounded-xl bg-black/35 border border-amber-200/10 text-[11px] text-amber-200/70">
-                  <strong>GitHub Profile & Email:</strong> Fetches only your GitHub
-                  profile picture (<code>avatar_url</code>) and email address (<code>email</code>).
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <button
-                    type="submit"
-                    disabled={isSubmittingAuth}
-                    className="flex-1 py-2.5 px-4 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-stone-950 font-semibold text-xs shadow-lg transition-all disabled:opacity-50"
-                  >
-                    {isSubmittingAuth
-                      ? 'Fetching GitHub Profile Picture & Email...'
-                      : 'Authorize with GitHub'}
-                  </button>
-                </div>
-              </form>
-            ) : !profile.isAuthenticated ? (
+            {!profile.isAuthenticated ? (
               /* Unauthenticated Primary Sign-In Button */
               <div className="space-y-3">
                 <div className="p-4 rounded-2xl bg-black/30 border border-amber-200/15 space-y-3">
                   <p className="text-xs text-amber-100/90 leading-relaxed">
                     You are currently exploring <strong>Eval Exec's Cafe</strong> in{' '}
                     <span className="text-amber-300 font-semibold">Preview Mode</span>.
-                    Sign in with <strong>GitHub</strong> to fetch your profile
-                    picture and email, display your photo above your isometric avatar,
-                    occupy a seat, and chat at tables.
+                    Sign in with <strong>GitHub</strong> to verify your own GitHub account,
+                    fetch your profile picture and email, and claim a seat in the café.
                   </p>
 
                   <div className="pt-1">
                     <button
                       type="button"
+                      disabled={isSubmittingAuth}
                       onClick={() => handleOpenProviderOAuth('github', 'login')}
-                      className="w-full flex items-center justify-center gap-2.5 py-3 px-4 rounded-2xl bg-[#181717] hover:bg-[#242323] border border-amber-300/35 text-white font-semibold text-xs shadow-lg transition-all"
+                      className="w-full flex items-center justify-center gap-2.5 py-3 px-4 rounded-2xl bg-[#181717] hover:bg-[#242323] border border-amber-300/35 text-white font-semibold text-xs shadow-lg transition-all disabled:opacity-50"
                     >
                       <ProviderIcon provider="github" className="w-4 h-4" />
-                      <span>Continue with GitHub</span>
+                      <span>
+                        {isSubmittingAuth
+                          ? 'Redirecting to GitHub...'
+                          : 'Continue with GitHub'}
+                      </span>
                     </button>
                   </div>
                 </div>
