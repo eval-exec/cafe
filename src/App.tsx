@@ -109,7 +109,7 @@ const DEFAULT_FOCUS_PREFS: FocusPreferences = {
   tasks: [
     {
       id: 'welcome-1',
-      text: "Sign in with GitHub or X & choose a seat in Eval Exec's Cafe",
+      text: "Sign in with GitHub & choose a seat in Eval Exec's Cafe",
       completed: false,
       createdAt: Date.now() - 120000,
     },
@@ -223,24 +223,18 @@ export function App() {
         ? new URLSearchParams(window.location.search)
         : null;
     const ghParam = params?.get('github');
-    const xParam = params?.get('x');
 
-    if (ghParam || xParam) {
-      const prov: SocialProvider = ghParam ? 'github' : 'x';
-      const handle = (ghParam || xParam || 'eval-exec')
+    if (ghParam) {
+      const prov: SocialProvider = 'github';
+      const handle = ghParam
         .replace(/[^a-zA-Z0-9_-]/g, '')
-        .slice(0, 39);
+        .slice(0, 39) || 'eval-exec';
       const dispName =
         params?.get('name') ||
-        (handle === 'eval-exec' || handle === 'eval_exec'
-          ? 'Eval Exec'
-          : handle);
-      const userId = `usr_${prov}_${handle.toLowerCase()}`;
-      const identId = `id_${prov}_${handle.toLowerCase()}`;
-      const avatarUrl =
-        prov === 'github'
-          ? `https://github.com/${handle}.png?size=160`
-          : `https://unavatar.io/x/${handle}`;
+        (handle === 'eval-exec' ? 'Eval Exec' : handle);
+      const userId = `usr_github_${handle.toLowerCase()}`;
+      const identId = `id_github_${handle.toLowerCase()}`;
+      const avatarUrl = `https://github.com/${handle}.png?size=160`;
       const ident: SocialIdentity = {
         id: identId,
         userId,
@@ -249,10 +243,7 @@ export function App() {
         username: handle,
         displayName: dispName,
         avatarUrl,
-        profileUrl:
-          prov === 'github'
-            ? `https://github.com/${handle}`
-            : `https://x.com/${handle}`,
+        profileUrl: `https://github.com/${handle}`,
         isPublic: true,
       };
       return {
@@ -267,7 +258,7 @@ export function App() {
           skinTone: '#F2C6A0',
           hairStyle: 'short',
           hairColor: '#4A2E1B',
-          clothingColor: prov === 'github' ? '#4E7D6B' : '#3B5978',
+          clothingColor: '#4E7D6B',
           accessory: 'glasses',
         },
         activityStatus: 'coding',
@@ -440,7 +431,7 @@ export function App() {
     if (authErrorParam) {
       const readableError =
         authErrorParam === 'IdentityAlreadyLinked'
-          ? 'That GitHub or X account is already linked to another café user.'
+          ? 'That GitHub account is already linked to another café user.'
           : authErrorParam === 'access_denied'
           ? 'Sign-in was cancelled.'
           : `Authentication error: ${authErrorParam}`;
@@ -589,7 +580,7 @@ export function App() {
     const unsubErr = multiplayerClient.onError((reason) => {
       if (reason.includes('AuthenticationRequired') || reason.includes('Sign in')) {
         setAuthModalNotice(
-          'Please sign in with GitHub or X to claim a persistent seat or participate in multiplayer.'
+          'Please sign in with GitHub to claim a persistent seat or participate in multiplayer.'
         );
         setIsAvatarModalOpen(true);
       }
@@ -778,11 +769,11 @@ export function App() {
     profile.userId,
   ]);
 
-  // Prompt unauthenticated visitors to sign in with GitHub or X
+  // Prompt unauthenticated visitors to sign in with GitHub
   const handleRequireAuth = (reason?: string) => {
     setAuthModalNotice(
       reason ||
-        'Sign in with GitHub or X to occupy a persistent seat, chat, add friends, and show your profile picture.'
+        'Sign in with GitHub to occupy a persistent seat, chat, add friends, and show your profile picture.'
     );
     setIsAvatarModalOpen(true);
   };
@@ -809,10 +800,10 @@ export function App() {
       return;
     }
 
-    // Fallback for static GitHub Pages: Web Crypto SHA-256 PKCE + Live Public GitHub/X Profile Lookup
+    // Fallback for static GitHub Pages: Web Crypto SHA-256 PKCE + Live Public GitHub Profile Lookup
     const resolved = await resolvePublicSocialProfile(
       provider,
-      usernameHint || (provider === 'github' ? 'eval-exec' : 'eval_exec'),
+      usernameHint || 'eval-exec',
       displayNameHint
     );
 
@@ -827,7 +818,7 @@ export function App() {
     );
     if (conflictingVisitor) {
       throw new Error(
-        `@${resolved.username} (${provider.toUpperCase()}) is already linked to another active café visitor.`
+        `@${resolved.username} (GitHub) is already linked to another active café visitor.`
       );
     }
 
@@ -850,13 +841,11 @@ export function App() {
         identities: nextIdentities,
       }));
       setCompletionBanner(
-        `Linked @${resolved.username} (${
-          provider === 'github' ? 'GitHub' : 'X'
-        }) to your café account!`
+        `Linked @${resolved.username} (GitHub) to your café account!`
       );
       window.setTimeout(() => setCompletionBanner(null), 4000);
     } else {
-      // Login mode: use stable internal user ID derived from first provider identity (never merging by username across providers)
+      // Login mode: use stable internal user ID derived from GitHub identity
       const internalUserId = `usr_${provider}_${resolved.providerUserId}`;
       const newIdent: SocialIdentity = {
         id: newIdentId,
@@ -879,9 +868,7 @@ export function App() {
         identities: [newIdent],
       }));
       setCompletionBanner(
-        `Signed in as ${resolved.displayName} (@${resolved.username}) via ${
-          provider === 'github' ? 'GitHub' : 'X'
-        }!`
+        `Signed in as ${resolved.displayName} (@${resolved.username}) via GitHub!`
       );
       window.setTimeout(() => setCompletionBanner(null), 4000);
     }
@@ -1090,11 +1077,11 @@ export function App() {
     setScene('street');
   };
 
-  // Sit Down at One of the 12 Seats (Requires GitHub or X Authentication)
+  // Sit Down at One of the 12 Seats (Requires GitHub Authentication)
   const handleSelectSeat = (seatId: SeatId) => {
     if (!profile.isAuthenticated) {
       handleRequireAuth(
-        `Sign in with GitHub or X to sit at ${SEATS[seatId].name} and join the live café.`
+        `Sign in with GitHub to sit at ${SEATS[seatId].name} and join the live café.`
       );
       return;
     }
@@ -1185,7 +1172,7 @@ export function App() {
     targetUserId: string | null = null
   ) => {
     if (!profile.isAuthenticated) {
-      handleRequireAuth('Sign in with GitHub or X to wave and send reactions.');
+      handleRequireAuth('Sign in with GitHub to wave and send reactions.');
       return;
     }
     multiplayerClient.sendReaction(kind, targetUserId);
@@ -1199,7 +1186,7 @@ export function App() {
 
   const handleAddFriend = (visitor: VisitorPresence) => {
     if (!profile.isAuthenticated) {
-      handleRequireAuth('Sign in with GitHub or X to add café friends.');
+      handleRequireAuth('Sign in with GitHub to add café friends.');
       return;
     }
     if (profile.friends.some((f) => f.userId === visitor.userId)) return;
@@ -1483,7 +1470,7 @@ export function App() {
           )}
         </div>
 
-        {/* Center: GitHub/X Social Identity Pill, Live Room Presence & Wave */}
+        {/* Center: GitHub Social Identity Pill, Live Room Presence & Wave */}
         <div className="flex items-center gap-1.5 pointer-events-auto">
           {profile.isAuthenticated ? (
             <button
@@ -1493,7 +1480,7 @@ export function App() {
                 setIsAvatarModalOpen(true);
               }}
               className="flex items-center gap-2 px-3 py-1.5 rounded-2xl bg-[#1A130F]/90 hover:bg-[#281D17] backdrop-blur-md border border-[#68D391]/45 text-xs text-[#F4ECE1] shadow-lg transition-all"
-              title="Manage your GitHub / X identity & isometric avatar"
+              title="Manage your GitHub identity & isometric avatar"
             >
               <div className="relative w-6 h-6 rounded-full bg-amber-950 border border-[#68D391] overflow-hidden flex items-center justify-center shrink-0">
                 {activeAvatarUrl ? (
@@ -1531,12 +1518,11 @@ export function App() {
                 setIsAvatarModalOpen(true);
               }}
               className="flex items-center gap-2 px-3.5 py-2 rounded-2xl bg-gradient-to-r from-[#241A14] to-[#2F2119] hover:from-[#2F2119] hover:to-[#3B291F] backdrop-blur-md border border-[#F3B664]/55 text-xs text-[#FFE0B5] font-semibold shadow-lg transition-all"
-              title="Sign in with GitHub or X to claim a seat and display your profile picture"
+              title="Sign in with GitHub to claim a seat and display your profile picture"
             >
               <LogIn className="w-3.5 h-3.5 text-[#F3B664]" />
               <ProviderIcon provider="github" className="w-3.5 h-3.5" />
-              <ProviderIcon provider="x" className="w-3 h-3" />
-              <span>Sign In</span>
+              <span>Sign In with GitHub</span>
               <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-amber-500/20 text-amber-200 hidden md:inline">
                 Preview Mode
               </span>
@@ -1790,7 +1776,7 @@ export function App() {
         onStartSharedTimer={() => {
           if (!profile.isAuthenticated) {
             handleRequireAuth(
-              'Sign in with GitHub or X to start a shared table Pomodoro timer.'
+              'Sign in with GitHub to start a shared table Pomodoro timer.'
             );
             return;
           }
@@ -1805,7 +1791,7 @@ export function App() {
         onJoinSharedTimer={() => {
           if (!profile.isAuthenticated) {
             handleRequireAuth(
-              'Sign in with GitHub or X to join a shared table Pomodoro timer.'
+              'Sign in with GitHub to join a shared table Pomodoro timer.'
             );
             return;
           }
@@ -1883,7 +1869,7 @@ export function App() {
         onSendReaction={handleSendReaction}
         onSendChat={(tableId, text) => {
           if (!profile.isAuthenticated) {
-            handleRequireAuth('Sign in with GitHub or X to chat in the café.');
+            handleRequireAuth('Sign in with GitHub to chat in the café.');
             return;
           }
           multiplayerClient.sendChat(tableId, text);

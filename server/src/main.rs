@@ -162,7 +162,7 @@ async fn health_handler(State(hub): State<Arc<CafeHub>>) -> impl IntoResponse {
     Json(json!({
         "status": "ok",
         "server": "eval-exec-cafe-rust-axum",
-        "oauthProviders": ["github", "x"],
+        "oauthProviders": ["github"],
         "pkce": "S256",
         "rooms": rooms.len(),
         "totalVisitors": total_visitors,
@@ -271,24 +271,6 @@ async fn oauth_start_handler(
                 }
             }
         }
-        SocialProvider::X => {
-            if let Ok(client_id) = std::env::var("X_CLIENT_ID") {
-                if !client_id.trim().is_empty() {
-                    let mut auth_url =
-                        Url::parse("https://twitter.com/i/oauth2/authorize").unwrap();
-                    auth_url
-                        .query_pairs_mut()
-                        .append_pair("response_type", "code")
-                        .append_pair("client_id", client_id.trim())
-                        .append_pair("redirect_uri", &callback_uri)
-                        .append_pair("scope", "users.read tweet.read")
-                        .append_pair("state", &flow.state)
-                        .append_pair("code_challenge", &flow.code_challenge)
-                        .append_pair("code_challenge_method", "S256");
-                    return Redirect::to(auth_url.as_str()).into_response();
-                }
-            }
-        }
     }
 
     // Redirect to the built-in standards-compliant OAuth 2.0 + PKCE Authorization Server
@@ -303,14 +285,7 @@ async fn oauth_start_handler(
         .append_pair("response_type", "code")
         .append_pair("client_id", "eval-exec-cafe-oauth")
         .append_pair("redirect_uri", &callback_uri)
-        .append_pair(
-            "scope",
-            if provider == SocialProvider::Github {
-                "read:user"
-            } else {
-                "users.read"
-            },
-        )
+        .append_pair("scope", "read:user")
         .append_pair("state", &flow.state)
         .append_pair("code_challenge", &flow.code_challenge)
         .append_pair("code_challenge_method", "S256");
@@ -362,18 +337,9 @@ async fn oauth_sandbox_authorize_page(
         }
     }
 
-    let provider_title = match provider {
-        SocialProvider::Github => "GitHub",
-        SocialProvider::X => "X (Twitter)",
-    };
-    let default_user = match provider {
-        SocialProvider::Github => "eval-exec",
-        SocialProvider::X => "eval_exec",
-    };
-    let scope_desc = match provider {
-        SocialProvider::Github => "Read-only public profile (id, username, display name, avatar_url). No repository, email, or write access.",
-        SocialProvider::X => "Read-only public profile (id, username, display name, profile_image_url). No posting or direct message access.",
-    };
+    let provider_title = "GitHub";
+    let default_user = "eval-exec";
+    let scope_desc = "Read-only public profile (id, username, display name, avatar_url). No repository, email, or write access.";
 
     let html = format!(
         r#"<!DOCTYPE html>
@@ -526,10 +492,7 @@ async fn issue_sandbox_authorization_and_redirect(
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| username.clone());
-    let mut resolved_avatar = match provider {
-        SocialProvider::Github => Some(format!("https://github.com/{}.png?size=160", username)),
-        SocialProvider::X => Some(format!("https://unavatar.io/x/{}", username)),
-    };
+    let mut resolved_avatar = Some(format!("https://github.com/{}.png?size=160", username));
 
     if provider == SocialProvider::Github {
         if let Ok(client) = reqwest::Client::builder()
@@ -774,82 +737,6 @@ async fn exchange_live_oauth_code(
                 display_name: name,
                 avatar_url,
                 profile_url: build_safe_profile_url(SocialProvider::Github, &login),
-                access_token,
-                refresh_token: None,
-                expires_at_ms: None,
-            })
-        }
-        SocialProvider::X => {
-            let client_id = std::env::var("X_CLIENT_ID").map_err(|_| CafeError::Unauthorized)?;
-            let mut form = vec![
-                ("grant_type", "authorization_code".to_string()),
-                ("client_id", client_id.clone()),
-                ("code", code.to_string()),
-                ("redirect_uri", callback_uri),
-                ("code_verifier", code_verifier.to_string()),
-            ];
-            let mut req = client.post("https://api.x.com/2/oauth2/token");
-            if let Ok(secret) = std::env::var("X_CLIENT_SECRET") {
-                if !secret.trim().is_empty() {
-                    req = req.basic_auth(client_id, Some(secret));
-                }
-            }
-            let token_resp = req
-                .form(&form)
-                .send()
-                .await
-                .map_err(|_| CafeError::Unauthorized)?
-                .json::<serde_json::Value>()
-                .await
-                .map_err(|_| CafeError::Unauthorized)?;
-            form.clear();
-
-            let access_token = token_resp
-                .get("access_token")
-                .and_then(|v| v.as_str())
-                .ok_or(CafeError::Unauthorized)?
-                .to_string();
-
-            let me_resp = client
-                .get("https://api.x.com/2/users/me?user.fields=id,name,username,profile_image_url")
-                .header(header::AUTHORIZATION, format!("Bearer {}", access_token))
-                .send()
-                .await
-                .map_err(|_| CafeError::Unauthorized)?
-                .json::<serde_json::Value>()
-                .await
-                .map_err(|_| CafeError::Unauthorized)?;
-
-            let data = me_resp.get("data").ok_or(CafeError::Unauthorized)?;
-            let id = data
-                .get("id")
-                .and_then(|v| v.as_str())
-                .ok_or(CafeError::Unauthorized)?
-                .to_string();
-            let username = data
-                .get("username")
-                .and_then(|v| v.as_str())
-                .ok_or(CafeError::Unauthorized)?
-                .to_string();
-            let name = data
-                .get("name")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.trim().is_empty())
-                .unwrap_or(&username)
-                .to_string();
-            let raw_img = data
-                .get("profile_image_url")
-                .and_then(|v| v.as_str())
-                .map(|u| u.replace("_normal.", "_400x400."));
-            let avatar_url = validate_safe_avatar_url(raw_img.as_deref());
-
-            Ok(ExternalProviderProfile {
-                provider: SocialProvider::X,
-                provider_user_id: id,
-                username: username.clone(),
-                display_name: name,
-                avatar_url,
-                profile_url: build_safe_profile_url(SocialProvider::X, &username),
                 access_token,
                 refresh_token: None,
                 expires_at_ms: None,

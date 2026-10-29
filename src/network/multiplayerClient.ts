@@ -48,9 +48,6 @@ type ErrorListener = (reason: string) => void;
 const ALLOWED_AVATAR_HOSTS = [
   'avatars.githubusercontent.com',
   'github.com',
-  'pbs.twimg.com',
-  'abs.twimg.com',
-  'unavatar.io',
 ];
 
 export function validateSafeAvatarUrl(raw?: string | null): string | null {
@@ -71,11 +68,9 @@ export function validateSafeAvatarUrl(raw?: string | null): string | null {
   }
 }
 
-export function buildSafeProfileUrl(provider: SocialProvider, username: string): string {
+export function buildSafeProfileUrl(_provider: SocialProvider, username: string): string {
   const clean = username.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 39) || 'user';
-  return provider === 'github'
-    ? `https://github.com/${clean}`
-    : `https://x.com/${clean}`;
+  return `https://github.com/${clean}`;
 }
 
 export function getApiBaseUrl(): string {
@@ -174,29 +169,24 @@ export async function resolvePublicSocialProfile(
 
   let providerUserId = `${provider}_${username.toLowerCase()}`;
   let displayName = (customDisplayName || '').trim() || username;
-  let avatarUrl: string | null =
-    provider === 'github'
-      ? `https://github.com/${username}.png?size=160`
-      : `https://unavatar.io/x/${username}`;
+  let avatarUrl: string | null = `https://github.com/${username}.png?size=160`;
 
-  if (provider === 'github') {
-    try {
-      const resp = await fetch(`https://api.github.com/users/${encodeURIComponent(username)}`, {
-        headers: { Accept: 'application/vnd.github+json' },
-      });
-      if (resp.ok) {
-        const data = await resp.json();
-        if (data.id) providerUserId = String(data.id);
-        if (!customDisplayName?.trim() && typeof data.name === 'string' && data.name.trim()) {
-          displayName = data.name.trim();
-        }
-        if (typeof data.avatar_url === 'string') {
-          avatarUrl = validateSafeAvatarUrl(data.avatar_url);
-        }
+  try {
+    const resp = await fetch(`https://api.github.com/users/${encodeURIComponent(username)}`, {
+      headers: { Accept: 'application/vnd.github+json' },
+    });
+    if (resp.ok) {
+      const data = await resp.json();
+      if (data.id) providerUserId = String(data.id);
+      if (!customDisplayName?.trim() && typeof data.name === 'string' && data.name.trim()) {
+        displayName = data.name.trim();
       }
-    } catch {
-      // Fallback to github.com/{username}.png avatar URL
+      if (typeof data.avatar_url === 'string') {
+        avatarUrl = validateSafeAvatarUrl(data.avatar_url);
+      }
     }
+  } catch {
+    // Fallback to github.com/{username}.png avatar URL
   }
 
   return {

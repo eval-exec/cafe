@@ -91,7 +91,7 @@ export type ActivityStatus =
   | 'chatting'
   | 'dnd';
 
-export type SocialProvider = 'github' | 'x';
+export type SocialProvider = 'github';
 
 export interface SocialIdentity {
   id: string;

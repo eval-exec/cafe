@@ -117,7 +117,6 @@ export const AvatarProfileModal: React.FC<AvatarProfileModalProps> = ({
   };
 
   const linkedGithub = profile.identities.find((i) => i.provider === 'github');
-  const linkedX = profile.identities.find((i) => i.provider === 'x');
 
   const handleOpenProviderOAuth = (
     provider: SocialProvider,
@@ -126,13 +125,8 @@ export const AvatarProfileModal: React.FC<AvatarProfileModalProps> = ({
     setLocalError(null);
     setOauthStepProvider(provider);
     setOauthStepMode(mode);
-    if (provider === 'github') {
-      setUsernameInput(linkedGithub?.username || 'eval-exec');
-      setDisplayNameInput(profile.displayName || 'Eval Exec');
-    } else {
-      setUsernameInput(linkedX?.username || 'eval_exec');
-      setDisplayNameInput(profile.displayName || 'Eval Exec');
-    }
+    setUsernameInput(linkedGithub?.username || 'eval-exec');
+    setDisplayNameInput(profile.displayName || 'Eval Exec');
   };
 
   const handleConfirmOAuth = async (e: React.FormEvent) => {
@@ -199,8 +193,8 @@ export const AvatarProfileModal: React.FC<AvatarProfileModalProps> = ({
               </h2>
               <p className="text-xs text-amber-200/65">
                 {profile.isAuthenticated
-                  ? 'Manage linked GitHub & X accounts, profile photo, and character'
-                  : 'Sign in with GitHub or X to claim seats, chat, and show your profile picture'}
+                  ? 'Manage your linked GitHub account, profile photo, and character'
+                  : 'Sign in with GitHub to claim seats, chat, and show your profile picture'}
               </p>
             </div>
           </div>
@@ -232,7 +226,7 @@ export const AvatarProfileModal: React.FC<AvatarProfileModalProps> = ({
                 : 'text-amber-200/65 hover:text-amber-100'
             }`}
           >
-            GitHub & X Identity
+            GitHub Identity
           </button>
           <button
             type="button"
@@ -249,7 +243,7 @@ export const AvatarProfileModal: React.FC<AvatarProfileModalProps> = ({
 
         {activeTab === 'identity' ? (
           <div className="mt-5 space-y-5">
-            {/* OAuth 2.0 + PKCE Interactive Step (when user clicks Continue with GitHub / X or Connect Account) */}
+            {/* OAuth 2.0 + PKCE Interactive Step (when user clicks Continue with GitHub or Connect Account) */}
             {oauthStepProvider ? (
               <form
                 onSubmit={handleConfirmOAuth}
@@ -265,8 +259,7 @@ export const AvatarProfileModal: React.FC<AvatarProfileModalProps> = ({
                     </span>
                     <div>
                       <h3 className="text-xs font-bold uppercase tracking-wider text-amber-200">
-                        {oauthStepMode === 'link' ? 'Link' : 'Continue with'}{' '}
-                        {oauthStepProvider === 'github' ? 'GitHub' : 'X (Twitter)'}
+                        {oauthStepMode === 'link' ? 'Link' : 'Continue with'} GitHub
                       </h3>
                       <p className="text-[11px] text-amber-200/65">
                         OAuth 2.0 Authorization Code + PKCE (S256)
@@ -284,15 +277,13 @@ export const AvatarProfileModal: React.FC<AvatarProfileModalProps> = ({
 
                 <div>
                   <label className="block text-[11px] font-semibold uppercase tracking-wider text-amber-200/80 mb-1">
-                    {oauthStepProvider === 'github' ? 'GitHub' : 'X'} Username
+                    GitHub Username
                   </label>
                   <input
                     type="text"
                     value={usernameInput}
                     onChange={(e) => setUsernameInput(e.target.value)}
-                    placeholder={
-                      oauthStepProvider === 'github' ? 'eval-exec' : 'eval_exec'
-                    }
+                    placeholder="eval-exec"
                     required
                     className="w-full px-3.5 py-2 rounded-xl bg-black/50 border border-amber-300/30 text-sm text-amber-50 focus:outline-none focus:border-amber-400"
                   />
@@ -333,11 +324,9 @@ export const AvatarProfileModal: React.FC<AvatarProfileModalProps> = ({
                 </div>
 
                 <div className="p-2.5 rounded-xl bg-black/35 border border-amber-200/10 text-[11px] text-amber-200/70">
-                  <strong>Read-only profile scope:</strong> Retrieves only your public{' '}
-                  {oauthStepProvider === 'github'
-                    ? 'GitHub ID, username, display name, and avatar_url'
-                    : 'X ID, username, display name, and profile_image_url'}
-                  . Never requests repository, posting, DM, or email permissions.
+                  <strong>Read-only profile scope:</strong> Retrieves only your public
+                  GitHub ID, username, display name, and avatar_url. Never requests
+                  repository, write, or email permissions.
                 </div>
 
                 <div className="flex items-center gap-2">
@@ -348,41 +337,30 @@ export const AvatarProfileModal: React.FC<AvatarProfileModalProps> = ({
                   >
                     {isSubmittingAuth
                       ? 'Verifying OAuth 2.0 + PKCE...'
-                      : `Authorize with ${
-                          oauthStepProvider === 'github' ? 'GitHub' : 'X'
-                        }`}
+                      : 'Authorize with GitHub'}
                   </button>
                 </div>
               </form>
             ) : !profile.isAuthenticated ? (
-              /* Unauthenticated Primary Sign-In Buttons */
+              /* Unauthenticated Primary Sign-In Button */
               <div className="space-y-3">
                 <div className="p-4 rounded-2xl bg-black/30 border border-amber-200/15 space-y-3">
                   <p className="text-xs text-amber-100/90 leading-relaxed">
                     You are currently exploring <strong>Eval Exec's Cafe</strong> in{' '}
                     <span className="text-amber-300 font-semibold">Preview Mode</span>.
-                    Sign in with <strong>GitHub</strong> or <strong>X</strong> to display
-                    your real profile photo above your isometric avatar, occupy a seat,
-                    chat at tables, and connect with other visitors.
+                    Sign in with <strong>GitHub</strong> to display your real profile
+                    photo above your isometric avatar, occupy a seat, chat at tables,
+                    and connect with other visitors.
                   </p>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
+                  <div className="pt-1">
                     <button
                       type="button"
                       onClick={() => handleOpenProviderOAuth('github', 'login')}
-                      className="flex items-center justify-center gap-2.5 py-3 px-4 rounded-2xl bg-[#181717] hover:bg-[#242323] border border-amber-300/35 text-white font-semibold text-xs shadow-lg transition-all"
+                      className="w-full flex items-center justify-center gap-2.5 py-3 px-4 rounded-2xl bg-[#181717] hover:bg-[#242323] border border-amber-300/35 text-white font-semibold text-xs shadow-lg transition-all"
                     >
                       <ProviderIcon provider="github" className="w-4 h-4" />
                       Continue with GitHub
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => handleOpenProviderOAuth('x', 'login')}
-                      className="flex items-center justify-center gap-2.5 py-3 px-4 rounded-2xl bg-[#0F1419] hover:bg-[#1B242D] border border-amber-300/35 text-white font-semibold text-xs shadow-lg transition-all"
-                    >
-                      <ProviderIcon provider="x" className="w-4 h-4" />
-                      Continue with X
                     </button>
                   </div>
                 </div>
@@ -485,14 +463,14 @@ export const AvatarProfileModal: React.FC<AvatarProfileModalProps> = ({
                   )}
                 </div>
 
-                {/* Linked Social Accounts (GitHub & X) */}
+                {/* Linked GitHub Account */}
                 <div>
                   <div className="flex items-center justify-between mb-2">
                     <label className="block text-xs font-semibold uppercase tracking-wider text-amber-200/80">
-                      Linked Social Accounts ({profile.identities.length}/2)
+                      Linked GitHub Account
                     </label>
                     <span className="text-[10px] text-amber-200/60">
-                      Link both GitHub & X to one café account
+                      OAuth 2.0 + PKCE Verified
                     </span>
                   </div>
 
@@ -551,9 +529,7 @@ export const AvatarProfileModal: React.FC<AvatarProfileModalProps> = ({
                                   </a>
                                 </div>
                                 <p className="text-[11px] text-amber-200/65">
-                                  {ident.displayName} •{' '}
-                                  {ident.provider === 'github' ? 'GitHub' : 'X'} ID #
-                                  {ident.providerUserId.slice(0, 10)}
+                                  {ident.displayName} • GitHub ID #{ident.providerUserId.slice(0, 10)}
                                 </p>
                               </div>
                             </div>
@@ -568,7 +544,7 @@ export const AvatarProfileModal: React.FC<AvatarProfileModalProps> = ({
                                     ? 'bg-emerald-500/15 border-emerald-400/35 text-emerald-200'
                                     : 'bg-white/5 border-amber-200/15 text-amber-200/60'
                                 }`}
-                                title="Toggle whether this social profile link is visible on your public café card"
+                                title="Toggle whether this GitHub profile link is visible on your public café card"
                               >
                                 {ident.isPublic !== false ? (
                                   <>
@@ -589,9 +565,7 @@ export const AvatarProfileModal: React.FC<AvatarProfileModalProps> = ({
                                 className="p-1.5 rounded-lg bg-white/5 hover:bg-rose-500/20 border border-amber-200/15 hover:border-rose-400/35 text-amber-200/65 hover:text-rose-200 disabled:opacity-35 disabled:pointer-events-none transition-all"
                                 title={
                                   canDisconnect
-                                    ? `Disconnect ${
-                                        ident.provider === 'github' ? 'GitHub' : 'X'
-                                      }`
+                                    ? 'Disconnect GitHub'
                                     : 'At least one login provider must remain connected'
                                 }
                               >
@@ -646,30 +620,19 @@ export const AvatarProfileModal: React.FC<AvatarProfileModalProps> = ({
                       );
                     })}
 
-                    {/* Connect Second Provider Buttons */}
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
-                      {!linkedGithub && (
-                        <button
-                          type="button"
-                          onClick={() => handleOpenProviderOAuth('github', 'link')}
-                          className="flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl bg-white/5 hover:bg-white/10 border border-amber-200/20 text-xs font-semibold text-amber-100 transition-all"
-                        >
-                          <Link2 className="w-3.5 h-3.5 text-amber-300" />
-                          <ProviderIcon provider="github" className="w-3.5 h-3.5" />
-                          Connect GitHub Account
-                        </button>
-                      )}
-                      {!linkedX && (
-                        <button
-                          type="button"
-                          onClick={() => handleOpenProviderOAuth('x', 'link')}
-                          className="flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl bg-white/5 hover:bg-white/10 border border-amber-200/20 text-xs font-semibold text-amber-100 transition-all"
-                        >
-                          <Link2 className="w-3.5 h-3.5 text-amber-300" />
-                          <ProviderIcon provider="x" className="w-3.5 h-3.5" />
-                          Connect X Account
-                        </button>
-                      )}
+                    {/* Switch / Re-authenticate GitHub Account Button */}
+                    <div className="pt-1">
+                      <button
+                        type="button"
+                        onClick={() => handleOpenProviderOAuth('github', 'login')}
+                        className="w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl bg-white/5 hover:bg-white/10 border border-amber-200/20 text-xs font-semibold text-amber-100 transition-all"
+                      >
+                        <Link2 className="w-3.5 h-3.5 text-amber-300" />
+                        <ProviderIcon provider="github" className="w-3.5 h-3.5" />
+                        {linkedGithub
+                          ? 'Switch GitHub Account'
+                          : 'Connect GitHub Account'}
+                      </button>
                     </div>
                   </div>
                 </div>

@@ -35,30 +35,24 @@ pub const VALID_SEATS: &[&str] = &[
 pub const ALLOWED_AVATAR_HOSTS: &[&str] = &[
     "avatars.githubusercontent.com",
     "github.com",
-    "pbs.twimg.com",
-    "abs.twimg.com",
-    "unavatar.io",
 ];
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum SocialProvider {
     Github,
-    X,
 }
 
 impl SocialProvider {
     pub fn as_str(&self) -> &'static str {
         match self {
             SocialProvider::Github => "github",
-            SocialProvider::X => "x",
         }
     }
 
     pub fn from_segment(s: &str) -> Option<Self> {
         match s.to_ascii_lowercase().as_str() {
             "github" => Some(SocialProvider::Github),
-            "x" | "twitter" => Some(SocialProvider::X),
             _ => None,
         }
     }
@@ -405,7 +399,6 @@ pub fn build_safe_profile_url(provider: SocialProvider, username: &str) -> Strin
     let handle = if clean.is_empty() { "user" } else { &clean };
     match provider {
         SocialProvider::Github => format!("https://github.com/{}", handle),
-        SocialProvider::X => format!("https://x.com/{}", handle),
     }
 }
 
@@ -1745,22 +1738,22 @@ mod tests {
             Err(CafeError::CannotDisconnectLastIdentity)
         );
 
-        // 2. Link an X account to User 1's cafe account
+        // 2. Link a second GitHub account to User 1's cafe account
         let (_, user1_after_link, identities_after_link) = store
             .complete_oauth_authentication(
                 OAuthMode::Link {
                     user_id: user1.id.clone(),
                 },
                 ExternalProviderProfile {
-                    provider: SocialProvider::X,
+                    provider: SocialProvider::Github,
                     provider_user_id: "90009".to_string(),
-                    username: "eval_exec_x".to_string(),
-                    display_name: "Eval Exec on X".to_string(),
+                    username: "eval-exec-alt".to_string(),
+                    display_name: "Eval Exec Alt".to_string(),
                     avatar_url: Some(
-                        "https://pbs.twimg.com/profile_images/90009/avatar_400x400.jpg".to_string(),
+                        "https://avatars.githubusercontent.com/u/90009?v=4".to_string(),
                     ),
-                    profile_url: "https://x.com/eval_exec_x".to_string(),
-                    access_token: "x_secret_token".to_string(),
+                    profile_url: "https://github.com/eval-exec-alt".to_string(),
+                    access_token: "gho_secret_token_2".to_string(),
                     refresh_token: None,
                     expires_at_ms: None,
                 },
@@ -1770,20 +1763,20 @@ mod tests {
         assert_eq!(user1_after_link.id, user1.id);
         assert_eq!(identities_after_link.len(), 2);
 
-        // 3. User 2 signs in with a different X account (even with the same display name — must NOT merge!)
+        // 3. User 2 signs in with a different GitHub account (even with the same display name — must NOT merge!)
         let (sess2, user2, _) = store
             .complete_oauth_authentication(
                 OAuthMode::Login,
                 ExternalProviderProfile {
-                    provider: SocialProvider::X,
+                    provider: SocialProvider::Github,
                     provider_user_id: "88888".to_string(),
                     username: "second_visitor".to_string(),
                     display_name: "Eval Exec".to_string(),
                     avatar_url: Some(
-                        "https://pbs.twimg.com/profile_images/88888/pic.jpg".to_string(),
+                        "https://avatars.githubusercontent.com/u/88888?v=4".to_string(),
                     ),
-                    profile_url: "https://x.com/second_visitor".to_string(),
-                    access_token: "x_token_2".to_string(),
+                    profile_url: "https://github.com/second_visitor".to_string(),
+                    access_token: "gho_token_2".to_string(),
                     refresh_token: None,
                     expires_at_ms: None,
                 },
@@ -1812,15 +1805,15 @@ mod tests {
         );
         assert_eq!(conflict, Err(CafeError::IdentityAlreadyLinked));
 
-        // 4. User 1 can switch preferred identity to X and disconnect GitHub since 2 are linked
-        let x_identity_id = "id_x_90009".to_string();
+        // 4. User 1 can switch preferred identity and disconnect the first identity since 2 are linked
+        let alt_identity_id = "id_github_90009".to_string();
         let (updated_u1, _) = store
             .update_preferences(
                 &sess1.session_id,
                 &sess1.csrf_token,
-                Some("Eval Exec (X)".to_string()),
-                Some(x_identity_id.clone()),
-                Some(Some(x_identity_id.clone())),
+                Some("Eval Exec Alt".to_string()),
+                Some(alt_identity_id.clone()),
+                Some(Some(alt_identity_id.clone())),
                 None,
                 Some("coding".to_string()),
                 None,
@@ -1828,7 +1821,7 @@ mod tests {
                 now + 150,
             )
             .unwrap();
-        assert_eq!(updated_u1.preferred_identity_id, x_identity_id);
+        assert_eq!(updated_u1.preferred_identity_id, alt_identity_id);
 
         let (_, remaining_identities) = store
             .disconnect_identity(
@@ -1839,7 +1832,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(remaining_identities.len(), 1);
-        assert_eq!(remaining_identities[0].provider, SocialProvider::X);
+        assert_eq!(remaining_identities[0].provider, SocialProvider::Github);
 
         // 5. Logout invalidates session
         let logged_out_uid = store
