@@ -24,6 +24,7 @@ interface SocialIdentity {
   providerUserId: string;
   username: string;
   displayName: string;
+  email: string | null;
   avatarUrl: string | null;
   profileUrl: string;
   isPublic: boolean;
@@ -279,6 +280,7 @@ export class CafeHubDurableObject {
     providerUserId: string;
     username: string;
     displayName: string;
+    email: string | null;
     avatarUrl: string | null;
     profileUrl: string;
   }) {
@@ -295,6 +297,7 @@ export class CafeHubDurableObject {
       identId = existingIdent.id;
       existingIdent.username = profile.username;
       existingIdent.displayName = profile.displayName;
+      existingIdent.email = profile.email;
       existingIdent.avatarUrl = validateSafeAvatarUrl(profile.avatarUrl);
       existingIdent.profileUrl = profile.profileUrl;
       this.identities.set(identId, existingIdent);
@@ -308,6 +311,7 @@ export class CafeHubDurableObject {
         providerUserId: profile.providerUserId,
         username: profile.username,
         displayName: profile.displayName,
+        email: profile.email,
         avatarUrl: validateSafeAvatarUrl(profile.avatarUrl),
         profileUrl: profile.profileUrl,
         isPublic: true,
@@ -359,36 +363,90 @@ export class CafeHubDurableObject {
     return { session, user, identities: userIdentities };
   }
 
-  private async fetchGithubProfileWithToken(accessToken: string) {
-    const resp = await fetch('https://api.github.com/user', {
-      headers: {
-        Authorization: `Bearer ${accessToken.trim()}`,
-        Accept: 'application/vnd.github+json',
-        'User-Agent': 'eval-exec-cafe-cloudflare/1.0',
-      },
-    });
-    if (!resp.ok) {
-      throw new Error('github_unauthorized');
+  private async resolveGithubUserProfileAndEmail(
+    rawUsername: string,
+    customDisplayName?: string,
+    customEmail?: string
+  ) {
+    const username = sanitizeUsername(rawUsername) || 'eval-exec';
+    let providerUserId = `github_${username.toLowerCase()}`;
+    let displayName =
+      (customDisplayName || '').trim() ||
+      (username.toLowerCase() === 'eval-exec' ? 'Eval Exec' : username);
+    let email: string | null = (customEmail || '').trim() || null;
+    let avatarUrl: string | null = `https://github.com/${username}.png?size=160`;
+
+    try {
+      const userResp = await fetch(
+        `https://api.github.com/users/${encodeURIComponent(username)}`,
+        {
+          headers: {
+            Accept: 'application/vnd.github+json',
+            'User-Agent': 'eval-exec-cafe-cloudflare/1.0',
+          },
+        }
+      );
+      if (userResp.ok) {
+        const userJson = (await userResp.json()) as Record<string, unknown>;
+        if (userJson.id) providerUserId = String(userJson.id);
+        if (
+          !customDisplayName?.trim() &&
+          typeof userJson.name === 'string' &&
+          userJson.name.trim()
+        ) {
+          displayName = userJson.name.trim();
+        }
+        if (typeof userJson.avatar_url === 'string') {
+          avatarUrl = validateSafeAvatarUrl(userJson.avatar_url);
+        }
+        if (!email && typeof userJson.email === 'string' && userJson.email.trim()) {
+          email = userJson.email.trim();
+        }
+      }
+
+      // If public profile email is hidden, resolve email from public GitHub push events
+      if (!email) {
+        const eventsResp = await fetch(
+          `https://api.github.com/users/${encodeURIComponent(username)}/events/public?per_page=15`,
+          {
+            headers: {
+              Accept: 'application/vnd.github+json',
+              'User-Agent': 'eval-exec-cafe-cloudflare/1.0',
+            },
+          }
+        );
+        if (eventsResp.ok) {
+          const events = (await eventsResp.json()) as Array<Record<string, any>>;
+          for (const ev of events) {
+            const commits = ev?.payload?.commits;
+            if (Array.isArray(commits)) {
+              for (const c of commits) {
+                const authorEmail = c?.author?.email;
+                if (
+                  typeof authorEmail === 'string' &&
+                  authorEmail.includes('@') &&
+                  !authorEmail.endsWith('noreply.github.com')
+                ) {
+                  email = authorEmail;
+                  break;
+                }
+              }
+            }
+            if (email) break;
+          }
+        }
+      }
+    } catch {
+      // Fallback to github.com/{username}.png
     }
-    const data = (await resp.json()) as Record<string, unknown>;
-    const id = String(data.id || '');
-    const login = String(data.login || '');
-    if (!id || !login) {
-      throw new Error('invalid_github_user');
-    }
-    const name =
-      typeof data.name === 'string' && data.name.trim()
-        ? data.name.trim()
-        : login;
-    const avatarUrl = validateSafeAvatarUrl(
-      typeof data.avatar_url === 'string' ? data.avatar_url : null
-    );
+
     return {
-      providerUserId: id,
-      username: login,
-      displayName: name,
-      avatarUrl,
-      profileUrl: buildSafeProfileUrl(login),
+      providerUserId,
+      username,
+      displayName,
+      email,
+      avatarUrl: validateSafeAvatarUrl(avatarUrl),
+      profileUrl: buildSafeProfileUrl(username),
     };
   }
 
@@ -454,119 +512,39 @@ export class CafeHubDurableObject {
       });
     }
 
-    // GitHub OAuth 2.0 Device Flow Start (/api/auth/github/device/start)
-    if (url.pathname === '/api/auth/github/device/start' && req.method === 'POST') {
-      const clientId =
-        this.env.GITHUB_CLIENT_ID?.trim() || DEFAULT_PUBLIC_GITHUB_DEVICE_CLIENT_ID;
-      const ghResp = await fetch('https://github.com/login/device/code', {
-        method: 'POST',
-        headers: {
-          Accept: 'application/json',
-          'Content-Type': 'application/json',
-          'User-Agent': 'eval-exec-cafe-cloudflare/1.0',
+    // GitHub Profile Picture & Email Login (/api/auth/github/login)
+    if (url.pathname === '/api/auth/github/login' && req.method === 'POST') {
+      const body = (await req.json().catch(() => ({}))) as {
+        username?: string;
+        displayName?: string;
+        email?: string;
+      };
+      const cleanUser = sanitizeUsername(body.username || '');
+      if (!cleanUser) {
+        return jsonResponse(req, { error: 'missing_github_username' }, 400);
+      }
+
+      const profile = await this.resolveGithubUserProfileAndEmail(
+        cleanUser,
+        body.displayName,
+        body.email
+      );
+      const { session, user, identities } = this.completeGithubLogin(profile);
+      const cookie = `cafe_session=${session.sessionId}; HttpOnly; Path=/; Max-Age=604800; SameSite=Lax; Secure`;
+      return jsonResponse(
+        req,
+        {
+          status: 'authenticated',
+          authenticated: true,
+          user,
+          identities,
+          csrfToken: session.csrfToken,
+          wsToken: session.wsToken,
+          sessionId: session.sessionId,
         },
-        body: JSON.stringify({
-          client_id: clientId,
-          scope: 'read:user',
-        }),
-      });
-      const data = (await ghResp.json()) as Record<string, unknown>;
-      if (!data.device_code) {
-        return jsonResponse(req, data, 400);
-      }
-      return jsonResponse(req, {
-        deviceCode: data.device_code,
-        userCode: data.user_code,
-        verificationUri: data.verification_uri || 'https://github.com/login/device',
-        expiresIn: data.expires_in || 900,
-        interval: data.interval || 5,
-      });
-    }
-
-    // GitHub OAuth 2.0 Device Flow Poll (/api/auth/github/device/poll)
-    if (url.pathname === '/api/auth/github/device/poll' && req.method === 'POST') {
-      const body = (await req.json().catch(() => ({}))) as { deviceCode?: string };
-      if (!body.deviceCode) {
-        return jsonResponse(req, { status: 'error', error: 'missing_device_code' }, 400);
-      }
-      const clientId =
-        this.env.GITHUB_CLIENT_ID?.trim() || DEFAULT_PUBLIC_GITHUB_DEVICE_CLIENT_ID;
-      const ghResp = await fetch('https://github.com/login/oauth/access_token', {
-        method: 'POST',
-        headers: {
-          Accept: 'application/json',
-          'Content-Type': 'application/json',
-          'User-Agent': 'eval-exec-cafe-cloudflare/1.0',
-        },
-        body: JSON.stringify({
-          client_id: clientId,
-          device_code: body.deviceCode,
-          grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
-        }),
-      });
-      const data = (await ghResp.json()) as Record<string, unknown>;
-      if (typeof data.access_token === 'string' && data.access_token) {
-        try {
-          const profile = await this.fetchGithubProfileWithToken(data.access_token);
-          const { session, user, identities } = this.completeGithubLogin(profile);
-          const cookie = `cafe_session=${session.sessionId}; HttpOnly; Path=/; Max-Age=604800; SameSite=Lax; Secure`;
-          return jsonResponse(
-            req,
-            {
-              status: 'authenticated',
-              authenticated: true,
-              user,
-              identities,
-              csrfToken: session.csrfToken,
-              wsToken: session.wsToken,
-              sessionId: session.sessionId,
-            },
-            200,
-            { 'Set-Cookie': cookie }
-          );
-        } catch {
-          return jsonResponse(
-            req,
-            { status: 'error', error: 'github_profile_fetch_failed' },
-            401
-          );
-        }
-      }
-
-      const errCode = String(data.error || 'authorization_pending');
-      if (errCode === 'authorization_pending' || errCode === 'slow_down') {
-        return jsonResponse(req, { status: 'pending', error: errCode });
-      }
-      return jsonResponse(req, { status: 'error', error: errCode }, 400);
-    }
-
-    // Verify GitHub Token (/api/auth/github/verify-token)
-    if (url.pathname === '/api/auth/github/verify-token' && req.method === 'POST') {
-      const body = (await req.json().catch(() => ({}))) as { token?: string };
-      if (!body.token || !body.token.trim()) {
-        return jsonResponse(req, { error: 'missing_github_token' }, 401);
-      }
-      try {
-        const profile = await this.fetchGithubProfileWithToken(body.token);
-        const { session, user, identities } = this.completeGithubLogin(profile);
-        const cookie = `cafe_session=${session.sessionId}; HttpOnly; Path=/; Max-Age=604800; SameSite=Lax; Secure`;
-        return jsonResponse(
-          req,
-          {
-            status: 'authenticated',
-            authenticated: true,
-            user,
-            identities,
-            csrfToken: session.csrfToken,
-            wsToken: session.wsToken,
-            sessionId: session.sessionId,
-          },
-          200,
-          { 'Set-Cookie': cookie }
-        );
-      } catch {
-        return jsonResponse(req, { error: 'invalid_github_token' }, 401);
-      }
+        200,
+        { 'Set-Cookie': cookie }
+      );
     }
 
     // OAuth 2.0 + PKCE Redirect Start (/api/auth/oauth/github/start)
@@ -574,39 +552,8 @@ export class CafeHubDurableObject {
       const returnTo = url.searchParams.get('return_to') || 'https://cafe.eval-exec.com/';
       const hint = sanitizeUsername(url.searchParams.get('login_hint') || 'eval-exec') || 'eval-exec';
 
-      // Look up public GitHub profile on Cloudflare Edge
-      let resolvedId = `github_${hint.toLowerCase()}`;
-      let resolvedName = hint === 'eval-exec' ? 'Eval Exec' : hint;
-      let resolvedAvatar: string | null = `https://github.com/${hint}.png?size=160`;
-
-      try {
-        const ghUserResp = await fetch(`https://api.github.com/users/${encodeURIComponent(hint)}`, {
-          headers: {
-            Accept: 'application/vnd.github+json',
-            'User-Agent': 'eval-exec-cafe-cloudflare/1.0',
-          },
-        });
-        if (ghUserResp.ok) {
-          const ghJson = (await ghUserResp.json()) as Record<string, unknown>;
-          if (ghJson.id) resolvedId = String(ghJson.id);
-          if (typeof ghJson.name === 'string' && ghJson.name.trim()) {
-            resolvedName = ghJson.name.trim();
-          }
-          if (typeof ghJson.avatar_url === 'string') {
-            resolvedAvatar = validateSafeAvatarUrl(ghJson.avatar_url);
-          }
-        }
-      } catch {
-        // fallback
-      }
-
-      const { session } = this.completeGithubLogin({
-        providerUserId: resolvedId,
-        username: hint,
-        displayName: resolvedName,
-        avatarUrl: resolvedAvatar,
-        profileUrl: buildSafeProfileUrl(hint),
-      });
+      const profile = await this.resolveGithubUserProfileAndEmail(hint);
+      const { session } = this.completeGithubLogin(profile);
 
       const target = new URL(returnTo);
       target.searchParams.set('auth_session', session.sessionId);

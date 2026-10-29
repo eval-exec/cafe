@@ -100,6 +100,7 @@ export interface SocialIdentity {
   providerUserId: string;
   username: string;
   displayName: string;
+  email?: string | null;
   avatarUrl: string | null;
   profileUrl: string;
   isPublic?: boolean;

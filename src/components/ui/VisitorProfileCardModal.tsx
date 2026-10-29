@@ -289,6 +289,7 @@ export const VisitorProfileCardModal: React.FC<VisitorProfileCardModalProps> = (
                     />
                     <span className="font-medium">
                       GitHub • @{ident.username}
+                      {ident.email ? ` (${ident.email})` : ''}
                     </span>
                   </span>
                   <ExternalLink className="w-3.5 h-3.5 text-amber-300/70 group-hover:text-amber-200 transition-colors" />

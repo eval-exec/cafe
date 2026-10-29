@@ -133,128 +133,9 @@ export function buildServerOAuthStartUrl(params: {
   return u.toString();
 }
 
-export interface GithubDeviceFlowStartResponse {
-  deviceCode: string;
-  userCode: string;
-  verificationUri: string;
-  expiresIn: number;
-  interval: number;
-}
-
-export async function startGithubDeviceFlow(): Promise<GithubDeviceFlowStartResponse> {
-  const res = await fetch(`${getApiBaseUrl()}/api/auth/github/device/start`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'include',
-  });
-  if (!res.ok) {
-    throw new Error('Could not start GitHub Device Flow. Ensure the local Rust server is running.');
-  }
-  return (await res.json()) as GithubDeviceFlowStartResponse;
-}
-
-export async function pollGithubDeviceFlow(
-  deviceCode: string
-): Promise<{ status: 'pending' | 'authenticated' | 'error'; session?: AuthSessionResponse; error?: string }> {
-  const res = await fetch(`${getApiBaseUrl()}/api/auth/github/device/poll`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'include',
-    body: JSON.stringify({ deviceCode }),
-  });
-  const data = await res.json();
-  if (data.status === 'authenticated' && data.authenticated) {
-    return { status: 'authenticated', session: data as AuthSessionResponse };
-  }
-  if (data.status === 'pending') {
-    return { status: 'pending' };
-  }
-  return { status: 'error', error: data.error || 'authorization_failed' };
-}
-
-export async function verifyGithubCliSession(): Promise<AuthSessionResponse> {
-  const res = await fetch(`${getApiBaseUrl()}/api/auth/github/verify-token`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'include',
-    body: JSON.stringify({ useLocalGhCli: true }),
-  });
-  if (!res.ok) {
-    throw new Error('Local GitHub CLI (gh) is not authenticated or server is unreachable.');
-  }
-  return (await res.json()) as AuthSessionResponse;
-}
-
 /**
- * Verifies a GitHub OAuth / Personal Access Token directly against https://api.github.com/user
- * using the official @octokit/request client (works on both localhost and static GitHub Pages).
- */
-export async function verifyGithubPersonalAccessToken(token: string): Promise<{
-  provider: SocialProvider;
-  providerUserId: string;
-  username: string;
-  displayName: string;
-  avatarUrl: string | null;
-  profileUrl: string;
-  serverSession?: AuthSessionResponse;
-}> {
-  const cleanToken = token.trim();
-  if (!cleanToken) {
-    throw new Error('Please enter a valid GitHub token.');
-  }
-
-  // First try server-side session creation on Cloudflare / local server
-  if (typeof window !== 'undefined') {
-    try {
-      const res = await fetch(`${getApiBaseUrl()}/api/auth/github/verify-token`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ token: cleanToken }),
-      });
-      if (res.ok) {
-        const sess = (await res.json()) as AuthSessionResponse;
-        const ident = sess.identities?.[0];
-        if (sess.authenticated && sess.user && ident) {
-          return {
-            provider: 'github',
-            providerUserId: ident.providerUserId,
-            username: ident.username,
-            displayName: sess.user.displayName,
-            avatarUrl: validateSafeAvatarUrl(ident.avatarUrl),
-            profileUrl: ident.profileUrl,
-            serverSession: sess,
-          };
-        }
-      }
-    } catch {
-      // Fallback to direct Octokit verification below
-    }
-  }
-
-  const response = await octokitRequest('GET /user', {
-    headers: {
-      authorization: `Bearer ${cleanToken}`,
-    },
-  });
-  const data = response.data;
-  const username = String(data.login);
-  const displayName =
-    typeof data.name === 'string' && data.name.trim() ? data.name.trim() : username;
-
-  return {
-    provider: 'github',
-    providerUserId: String(data.id),
-    username,
-    displayName,
-    avatarUrl: validateSafeAvatarUrl(data.avatar_url),
-    profileUrl: buildSafeProfileUrl('github', username),
-  };
-}
-
-/**
- * Resolves real public GitHub user profile metadata using @octokit/request and Web Crypto PKCE S256
- * when running on static GitHub Pages where the local Rust server is not reachable.
+ * Resolves a GitHub user's profile picture (`avatarUrl`) and email (`email`)
+ * via Cloudflare Worker `/api/auth/github/login` and Octokit (`GET /users/{username}` + public events).
  */
 export async function resolvePublicSocialProfile(
   provider: SocialProvider,
@@ -265,16 +146,18 @@ export async function resolvePublicSocialProfile(
   providerUserId: string;
   username: string;
   displayName: string;
+  email: string | null;
   avatarUrl: string | null;
   profileUrl: string;
   pkceChallenge: string;
+  serverSession?: AuthSessionResponse;
 }> {
   const username = rawUsername.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 39);
   if (!username) {
     throw new Error('Please enter a valid GitHub username.');
   }
 
-  // Generate real Web Crypto PKCE S256 verifier & challenge
+  // Generate Web Crypto PKCE S256 verifier & challenge
   const verifierBytes = new Uint8Array(32);
   window.crypto.getRandomValues(verifierBytes);
   const verifier = Array.from(verifierBytes, (b) => b.toString(16).padStart(2, '0')).join('');
@@ -287,8 +170,41 @@ export async function resolvePublicSocialProfile(
     .replace(/\//g, '_')
     .replace(/=+$/, '');
 
+  // Try Cloudflare Worker / API endpoint first so session + profile picture + email are resolved on the edge
+  try {
+    const apiRes = await fetch(`${getApiBaseUrl()}/api/auth/github/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({
+        username,
+        displayName: customDisplayName?.trim() || undefined,
+      }),
+    });
+    if (apiRes.ok) {
+      const sess = (await apiRes.json()) as AuthSessionResponse;
+      const ident = sess.identities?.[0];
+      if (sess.authenticated && sess.user && ident) {
+        return {
+          provider: 'github',
+          providerUserId: ident.providerUserId,
+          username: ident.username,
+          displayName: sess.user.displayName,
+          email: ident.email || null,
+          avatarUrl: validateSafeAvatarUrl(ident.avatarUrl),
+          profileUrl: ident.profileUrl,
+          pkceChallenge,
+          serverSession: sess,
+        };
+      }
+    }
+  } catch {
+    // Fallback to client-side Octokit lookup below
+  }
+
   let providerUserId = `${provider}_${username.toLowerCase()}`;
   let displayName = (customDisplayName || '').trim() || username;
+  let email: string | null = null;
   let avatarUrl: string | null = `https://github.com/${username}.png?size=160`;
 
   try {
@@ -303,6 +219,36 @@ export async function resolvePublicSocialProfile(
     if (typeof data.avatar_url === 'string') {
       avatarUrl = validateSafeAvatarUrl(data.avatar_url);
     }
+    if (typeof data.email === 'string' && data.email.trim()) {
+      email = data.email.trim();
+    }
+
+    if (!email) {
+      const eventsResp = await fetch(
+        `https://api.github.com/users/${encodeURIComponent(username)}/events/public?per_page=15`,
+        { headers: { Accept: 'application/vnd.github+json' } }
+      );
+      if (eventsResp.ok) {
+        const events = (await eventsResp.json()) as Array<Record<string, any>>;
+        for (const ev of events) {
+          const commits = ev?.payload?.commits;
+          if (Array.isArray(commits)) {
+            for (const c of commits) {
+              const authorEmail = c?.author?.email;
+              if (
+                typeof authorEmail === 'string' &&
+                authorEmail.includes('@') &&
+                !authorEmail.endsWith('noreply.github.com')
+              ) {
+                email = authorEmail;
+                break;
+              }
+            }
+          }
+          if (email) break;
+        }
+      }
+    }
   } catch {
     // Fallback to github.com/{username}.png avatar URL
   }
@@ -312,6 +258,7 @@ export async function resolvePublicSocialProfile(
     providerUserId,
     username,
     displayName,
+    email,
     avatarUrl: validateSafeAvatarUrl(avatarUrl),
     profileUrl: buildSafeProfileUrl(provider, username),
     pkceChallenge,
