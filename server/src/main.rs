@@ -759,40 +759,42 @@ async fn resolve_github_profile_and_email(
             }
         }
 
-        // If public profile email is null, inspect public push events for commit author email
+        // If public profile email is null, inspect public GitHub commit search for commit author email
         if resolved_email.is_none() {
-            if let Ok(ev_resp) = client
+            if let Ok(search_resp) = client
                 .get(format!(
-                    "https://api.github.com/users/{}/events/public?per_page=15",
+                    "https://api.github.com/search/commits?q=author:{}&sort=author-date&order=desc&per_page=1",
                     username
                 ))
+                .header(header::ACCEPT, "application/vnd.github+json")
                 .send()
                 .await
             {
-                if ev_resp.status().is_success() {
-                    if let Ok(serde_json::Value::Array(events)) =
-                        ev_resp.json::<serde_json::Value>().await
-                    {
-                        'outer: for ev in events {
-                            if let Some(commits) = ev
-                                .get("payload")
-                                .and_then(|p| p.get("commits"))
-                                .and_then(|c| c.as_array())
-                            {
-                                for c in commits {
-                                    if let Some(em) = c
-                                        .get("author")
+                if search_resp.status().is_success() {
+                    if let Ok(search_json) = search_resp.json::<serde_json::Value>().await {
+                        if let Some(first_item) = search_json
+                            .get("items")
+                            .and_then(|i| i.as_array())
+                            .and_then(|arr| arr.first())
+                        {
+                            let candidate = first_item
+                                .get("commit")
+                                .and_then(|c| c.get("author"))
+                                .and_then(|a| a.get("email"))
+                                .and_then(|e| e.as_str())
+                                .or_else(|| {
+                                    first_item
+                                        .get("commit")
+                                        .and_then(|c| c.get("committer"))
                                         .and_then(|a| a.get("email"))
                                         .and_then(|e| e.as_str())
-                                    {
-                                        let trimmed = em.trim();
-                                        if trimmed.contains('@')
-                                            && !trimmed.ends_with("users.noreply.github.com")
-                                        {
-                                            resolved_email = Some(trimmed.to_string());
-                                            break 'outer;
-                                        }
-                                    }
+                                });
+                            if let Some(em) = candidate {
+                                let trimmed = em.trim();
+                                if trimmed.contains('@')
+                                    && !trimmed.ends_with("noreply.github.com")
+                                {
+                                    resolved_email = Some(trimmed.to_string());
                                 }
                             }
                         }

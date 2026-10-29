@@ -404,10 +404,10 @@ export class CafeHubDurableObject {
         }
       }
 
-      // If public profile email is hidden, resolve email from public GitHub push events
+      // If public profile email is hidden, resolve email from public GitHub commit search
       if (!email) {
-        const eventsResp = await fetch(
-          `https://api.github.com/users/${encodeURIComponent(username)}/events/public?per_page=15`,
+        const searchResp = await fetch(
+          `https://api.github.com/search/commits?q=author:${encodeURIComponent(username)}&sort=author-date&order=desc&per_page=1`,
           {
             headers: {
               Accept: 'application/vnd.github+json',
@@ -415,24 +415,17 @@ export class CafeHubDurableObject {
             },
           }
         );
-        if (eventsResp.ok) {
-          const events = (await eventsResp.json()) as Array<Record<string, any>>;
-          for (const ev of events) {
-            const commits = ev?.payload?.commits;
-            if (Array.isArray(commits)) {
-              for (const c of commits) {
-                const authorEmail = c?.author?.email;
-                if (
-                  typeof authorEmail === 'string' &&
-                  authorEmail.includes('@') &&
-                  !authorEmail.endsWith('noreply.github.com')
-                ) {
-                  email = authorEmail;
-                  break;
-                }
-              }
-            }
-            if (email) break;
+        if (searchResp.ok) {
+          const searchJson = (await searchResp.json()) as Record<string, any>;
+          const firstItem = searchJson?.items?.[0];
+          const authorEmail =
+            firstItem?.commit?.author?.email || firstItem?.commit?.committer?.email;
+          if (
+            typeof authorEmail === 'string' &&
+            authorEmail.includes('@') &&
+            !authorEmail.endsWith('noreply.github.com')
+          ) {
+            email = authorEmail.trim();
           }
         }
       }
@@ -934,7 +927,7 @@ export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
     if (url.pathname.startsWith('/api/') || url.pathname === '/ws') {
-      const id = env.CAFE_HUB.idFromName('global-eval-exec-cafe-hub');
+      const id = env.CAFE_HUB.idFromName('global-eval-exec-cafe-hub-v2');
       const stub = env.CAFE_HUB.get(id);
       return stub.fetch(req);
     }
