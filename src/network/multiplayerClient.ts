@@ -75,10 +75,13 @@ export function buildSafeProfileUrl(_provider: SocialProvider, username: string)
 }
 
 export function getApiBaseUrl(): string {
-  if (typeof window === 'undefined') return 'http://127.0.0.1:3001';
+  if (typeof window === 'undefined') return 'https://cafe.eval-exec.com';
   const host = window.location.hostname;
   if (host === '127.0.0.1' || host === 'localhost') {
     return 'http://127.0.0.1:3001';
+  }
+  if (host.endsWith('github.io')) {
+    return 'https://cafe.eval-exec.com';
   }
   return window.location.origin;
 }
@@ -93,9 +96,6 @@ export interface AuthSessionResponse {
 }
 
 export async function fetchAuthSession(sessionId?: string): Promise<AuthSessionResponse | null> {
-  if (typeof window !== 'undefined' && window.location.hostname.endsWith('github.io')) {
-    return null;
-  }
   try {
     const headers: Record<string, string> = {};
     if (sessionId) {
@@ -203,8 +203,8 @@ export async function verifyGithubPersonalAccessToken(token: string): Promise<{
     throw new Error('Please enter a valid GitHub token.');
   }
 
-  // First try server-side session creation if local server is reachable
-  if (typeof window !== 'undefined' && !window.location.hostname.endsWith('github.io')) {
+  // First try server-side session creation on Cloudflare / local server
+  if (typeof window !== 'undefined') {
     try {
       const res = await fetch(`${getApiBaseUrl()}/api/auth/github/verify-token`, {
         method: 'POST',
@@ -362,10 +362,13 @@ export class CafeMultiplayerClient {
   }
 
   private getWsUrl(): string {
-    if (typeof window === 'undefined') return 'ws://127.0.0.1:3001/ws';
+    if (typeof window === 'undefined') return 'wss://cafe.eval-exec.com/ws';
     const host = window.location.hostname;
     if (host === '127.0.0.1' || host === 'localhost') {
       return `ws://127.0.0.1:3001/ws`;
+    }
+    if (host.endsWith('github.io')) {
+      return `wss://cafe.eval-exec.com/ws`;
     }
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     return `${proto}//${window.location.host}/ws`;
@@ -373,11 +376,6 @@ export class CafeMultiplayerClient {
 
   private connectWebSocket(): void {
     if (typeof window === 'undefined') return;
-    if (window.location.hostname.endsWith('github.io')) {
-      this.setStatus('connected-local-mesh');
-      this.announceOnMesh();
-      return;
-    }
 
     try {
       if (this.ws) {
