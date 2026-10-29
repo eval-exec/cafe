@@ -366,15 +366,21 @@ export class CafeHubDurableObject {
   private async resolveGithubUserProfileAndEmail(
     rawUsername: string,
     customDisplayName?: string,
-    customEmail?: string
+    customEmail?: string,
+    customAvatarUrl?: string,
+    customProviderUserId?: string
   ) {
     const username = sanitizeUsername(rawUsername) || 'eval-exec';
-    let providerUserId = `github_${username.toLowerCase()}`;
+    let providerUserId =
+      (customProviderUserId || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 48) ||
+      `github_${username.toLowerCase()}`;
     let displayName =
       (customDisplayName || '').trim() ||
       (username.toLowerCase() === 'eval-exec' ? 'Eval Exec' : username);
     let email: string | null = (customEmail || '').trim() || null;
-    let avatarUrl: string | null = `https://github.com/${username}.png?size=160`;
+    let avatarUrl: string | null =
+      validateSafeAvatarUrl(customAvatarUrl) ||
+      `https://github.com/${username}.png?size=160`;
 
     try {
       const userResp = await fetch(
@@ -511,6 +517,8 @@ export class CafeHubDurableObject {
         username?: string;
         displayName?: string;
         email?: string;
+        avatarUrl?: string;
+        providerUserId?: string;
       };
       const cleanUser = sanitizeUsername(body.username || '');
       if (!cleanUser) {
@@ -520,7 +528,9 @@ export class CafeHubDurableObject {
       const profile = await this.resolveGithubUserProfileAndEmail(
         cleanUser,
         body.displayName,
-        body.email
+        body.email,
+        body.avatarUrl,
+        body.providerUserId
       );
       const { session, user, identities } = this.completeGithubLogin(profile);
       const cookie = `cafe_session=${session.sessionId}; HttpOnly; Path=/; Max-Age=604800; SameSite=Lax; Secure`;

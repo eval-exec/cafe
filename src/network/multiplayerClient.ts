@@ -170,38 +170,6 @@ export async function resolvePublicSocialProfile(
     .replace(/\//g, '_')
     .replace(/=+$/, '');
 
-  // Try Cloudflare Worker / API endpoint first so session + profile picture + email are resolved on the edge
-  try {
-    const apiRes = await fetch(`${getApiBaseUrl()}/api/auth/github/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify({
-        username,
-        displayName: customDisplayName?.trim() || undefined,
-      }),
-    });
-    if (apiRes.ok) {
-      const sess = (await apiRes.json()) as AuthSessionResponse;
-      const ident = sess.identities?.[0];
-      if (sess.authenticated && sess.user && ident) {
-        return {
-          provider: 'github',
-          providerUserId: ident.providerUserId,
-          username: ident.username,
-          displayName: sess.user.displayName,
-          email: ident.email || null,
-          avatarUrl: validateSafeAvatarUrl(ident.avatarUrl),
-          profileUrl: ident.profileUrl,
-          pkceChallenge,
-          serverSession: sess,
-        };
-      }
-    }
-  } catch {
-    // Fallback to client-side Octokit lookup below
-  }
-
   let providerUserId = `${provider}_${username.toLowerCase()}`;
   let displayName = (customDisplayName || '').trim() || username;
   let email: string | null = null;
@@ -243,7 +211,42 @@ export async function resolvePublicSocialProfile(
       }
     }
   } catch {
-    // Fallback to github.com/{username}.png avatar URL
+    // Fallback to server resolution or github.com/{username}.png avatar URL
+  }
+
+  // Register session with Cloudflare Worker / API endpoint with resolved profile picture & email
+  try {
+    const apiRes = await fetch(`${getApiBaseUrl()}/api/auth/github/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({
+        username,
+        displayName,
+        email: email || undefined,
+        avatarUrl: avatarUrl || undefined,
+        providerUserId,
+      }),
+    });
+    if (apiRes.ok) {
+      const sess = (await apiRes.json()) as AuthSessionResponse;
+      const ident = sess.identities?.[0];
+      if (sess.authenticated && sess.user && ident) {
+        return {
+          provider: 'github',
+          providerUserId: ident.providerUserId,
+          username: ident.username,
+          displayName: sess.user.displayName,
+          email: ident.email || email || null,
+          avatarUrl: validateSafeAvatarUrl(ident.avatarUrl || avatarUrl),
+          profileUrl: ident.profileUrl,
+          pkceChallenge,
+          serverSession: sess,
+        };
+      }
+    }
+  } catch {
+    // Offline / static mesh fallback
   }
 
   return {
