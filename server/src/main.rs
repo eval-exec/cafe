@@ -138,6 +138,18 @@ async fn main() {
             "/api/auth/oauth/:provider/callback",
             get(oauth_callback_handler),
         )
+        .route(
+            "/api/auth/github/device/start",
+            post(github_device_start_handler),
+        )
+        .route(
+            "/api/auth/github/device/poll",
+            post(github_device_poll_handler),
+        )
+        .route(
+            "/api/auth/github/verify-token",
+            post(github_verify_token_handler),
+        )
         .route("/ws", get(ws_handler))
         .layer(CorsLayer::permissive())
         .with_state(hub);
@@ -742,6 +754,348 @@ async fn exchange_live_oauth_code(
                 expires_at_ms: None,
             })
         }
+    }
+}
+
+const DEFAULT_PUBLIC_GITHUB_DEVICE_CLIENT_ID: &str = "178c6fc778ccc68e1d6a";
+
+fn resolve_github_device_client_id() -> String {
+    std::env::var("GITHUB_CLIENT_ID")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DEFAULT_PUBLIC_GITHUB_DEVICE_CLIENT_ID.to_string())
+}
+
+async fn fetch_github_profile_with_token(
+    access_token: &str,
+) -> Result<ExternalProviderProfile, CafeError> {
+    let client = reqwest::Client::builder()
+        .user_agent("eval-exec-cafe-oauth/1.0")
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+        .map_err(|_| CafeError::Unauthorized)?;
+
+    let user_resp = client
+        .get("https://api.github.com/user")
+        .header(header::AUTHORIZATION, format!("Bearer {}", access_token.trim()))
+        .header(header::ACCEPT, "application/vnd.github+json")
+        .send()
+        .await
+        .map_err(|_| CafeError::Unauthorized)?;
+
+    if !user_resp.status().is_success() {
+        return Err(CafeError::Unauthorized);
+    }
+
+    let user_json = user_resp
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|_| CafeError::Unauthorized)?;
+
+    let id = user_json
+        .get("id")
+        .and_then(|v| v.as_u64())
+        .ok_or(CafeError::Unauthorized)?
+        .to_string();
+    let login = user_json
+        .get("login")
+        .and_then(|v| v.as_str())
+        .ok_or(CafeError::Unauthorized)?
+        .to_string();
+    let name = user_json
+        .get("name")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(&login)
+        .to_string();
+    let avatar_url =
+        validate_safe_avatar_url(user_json.get("avatar_url").and_then(|v| v.as_str()));
+
+    Ok(ExternalProviderProfile {
+        provider: SocialProvider::Github,
+        provider_user_id: id,
+        username: login.clone(),
+        display_name: name,
+        avatar_url,
+        profile_url: build_safe_profile_url(SocialProvider::Github, &login),
+        access_token: access_token.trim().to_string(),
+        refresh_token: None,
+        expires_at_ms: None,
+    })
+}
+
+async fn finalize_github_profile_session(
+    hub: &Arc<CafeHub>,
+    profile: ExternalProviderProfile,
+) -> Response {
+    let ts = now_ms();
+    let outcome = {
+        let mut auth = hub.auth.write().await;
+        auth.complete_oauth_authentication(OAuthMode::Login, profile, ts)
+    };
+
+    match outcome {
+        Ok((session, user, identities)) => {
+            let bundle = {
+                let auth = hub.auth.read().await;
+                auth.resolve_public_identity_bundle(&user.id)
+            };
+            if let Some((u, av_url, primary_id, public_ids)) = bundle {
+                let mut rooms = hub.rooms.write().await;
+                for (room_id, room) in rooms.iter_mut() {
+                    if let Some(snap) = room.sync_authenticated_user(
+                        &u,
+                        av_url.clone(),
+                        primary_id.clone(),
+                        public_ids.clone(),
+                        ts,
+                    ) {
+                        let _ = hub.tx.send((room_id.clone(), ServerEvent::Snapshot(snap)));
+                    }
+                }
+            }
+            let cookie = build_session_cookie(&session.session_id, 7 * 24 * 3600);
+            (
+                [(header::SET_COOKIE, cookie)],
+                Json(json!({
+                    "status": "authenticated",
+                    "authenticated": true,
+                    "user": user,
+                    "identities": identities,
+                    "csrfToken": session.csrf_token,
+                    "wsToken": session.ws_token,
+                    "sessionId": session.session_id,
+                })),
+            )
+                .into_response()
+        }
+        Err(err) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": format!("{:?}", err) })),
+        )
+            .into_response(),
+    }
+}
+
+async fn github_device_start_handler() -> Response {
+    let client_id = resolve_github_device_client_id();
+    let client = match reqwest::Client::builder()
+        .user_agent("eval-exec-cafe-oauth/1.0")
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "http_client_error" })),
+            )
+                .into_response();
+        }
+    };
+
+    let resp = match client
+        .post("https://github.com/login/device/code")
+        .header(header::ACCEPT, "application/json")
+        .json(&json!({
+            "client_id": client_id,
+            "scope": "read:user",
+        }))
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(_) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": "github_unreachable" })),
+            )
+                .into_response();
+        }
+    };
+
+    let data: serde_json::Value = match resp.json().await {
+        Ok(v) => v,
+        Err(_) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": "invalid_github_response" })),
+            )
+                .into_response();
+        }
+    };
+
+    let Some(device_code) = data.get("device_code").and_then(|v| v.as_str()) else {
+        return (StatusCode::BAD_REQUEST, Json(data)).into_response();
+    };
+    let user_code = data
+        .get("user_code")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let verification_uri = data
+        .get("verification_uri")
+        .and_then(|v| v.as_str())
+        .unwrap_or("https://github.com/login/device");
+    let expires_in = data.get("expires_in").and_then(|v| v.as_u64()).unwrap_or(900);
+    let interval = data.get("interval").and_then(|v| v.as_u64()).unwrap_or(5);
+
+    Json(json!({
+        "deviceCode": device_code,
+        "userCode": user_code,
+        "verificationUri": verification_uri,
+        "expiresIn": expires_in,
+        "interval": interval,
+    }))
+    .into_response()
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DevicePollPayload {
+    device_code: String,
+}
+
+async fn github_device_poll_handler(
+    State(hub): State<Arc<CafeHub>>,
+    Json(payload): Json<DevicePollPayload>,
+) -> Response {
+    let client_id = resolve_github_device_client_id();
+    let client = match reqwest::Client::builder()
+        .user_agent("eval-exec-cafe-oauth/1.0")
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "http_client_error" })),
+            )
+                .into_response();
+        }
+    };
+
+    let resp = match client
+        .post("https://github.com/login/oauth/access_token")
+        .header(header::ACCEPT, "application/json")
+        .json(&json!({
+            "client_id": client_id,
+            "device_code": payload.device_code,
+            "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+        }))
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(_) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": "github_unreachable" })),
+            )
+                .into_response();
+        }
+    };
+
+    let data: serde_json::Value = match resp.json().await {
+        Ok(v) => v,
+        Err(_) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": "invalid_github_response" })),
+            )
+                .into_response();
+        }
+    };
+
+    if let Some(access_token) = data.get("access_token").and_then(|v| v.as_str()) {
+        match fetch_github_profile_with_token(access_token).await {
+            Ok(profile) => return finalize_github_profile_session(&hub, profile).await,
+            Err(_) => {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(json!({ "status": "error", "error": "github_profile_fetch_failed" })),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    let err_code = data
+        .get("error")
+        .and_then(|v| v.as_str())
+        .unwrap_or("authorization_pending");
+    if err_code == "authorization_pending" || err_code == "slow_down" {
+        return Json(json!({
+            "status": "pending",
+            "error": err_code,
+        }))
+        .into_response();
+    }
+
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({
+            "status": "error",
+            "error": err_code,
+        })),
+    )
+        .into_response()
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VerifyTokenPayload {
+    token: Option<String>,
+    use_local_gh_cli: Option<bool>,
+}
+
+async fn github_verify_token_handler(
+    State(hub): State<Arc<CafeHub>>,
+    Json(payload): Json<VerifyTokenPayload>,
+) -> Response {
+    let resolved_token = if payload.use_local_gh_cli.unwrap_or(false)
+        || payload
+            .token
+            .as_deref()
+            .map(|s| s.trim().is_empty())
+            .unwrap_or(true)
+    {
+        match tokio::process::Command::new("gh")
+            .args(["auth", "token"])
+            .output()
+            .await
+        {
+            Ok(out) if out.status.success() => {
+                String::from_utf8_lossy(&out.stdout).trim().to_string()
+            }
+            _ => {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(json!({ "error": "local_gh_cli_not_authenticated" })),
+                )
+                    .into_response();
+            }
+        }
+    } else {
+        payload.token.unwrap_or_default().trim().to_string()
+    };
+
+    if resolved_token.is_empty() {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "missing_github_token" })),
+        )
+            .into_response();
+    }
+
+    match fetch_github_profile_with_token(&resolved_token).await {
+        Ok(profile) => finalize_github_profile_session(&hub, profile).await,
+        Err(_) => (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "invalid_github_token" })),
+        )
+            .into_response(),
     }
 }
 

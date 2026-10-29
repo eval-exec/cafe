@@ -1810,6 +1810,71 @@ export function App() {
           authNotice={authModalNotice}
           onUpdateProfile={handleUpdateProfile}
           onStartOAuth={handleStartOAuth}
+          onApplyVerifiedGithubSession={({
+            session,
+            providerUserId,
+            username,
+            displayName,
+            avatarUrl,
+            profileUrl,
+          }) => {
+            if (session && session.authenticated && session.user && session.identities) {
+              const u = session.user;
+              const idents = session.identities;
+              setProfile((prev) => ({
+                ...prev,
+                userId: u.id,
+                authToken: session.wsToken || prev.authToken,
+                csrfToken: session.csrfToken,
+                sessionId: session.sessionId,
+                isAuthenticated: true,
+                displayName: u.displayName,
+                preferredIdentityId: u.preferredIdentityId,
+                preferredAvatarIdentityId:
+                  u.preferredAvatarIdentityId !== undefined
+                    ? u.preferredAvatarIdentityId
+                    : u.preferredIdentityId,
+                identities: idents,
+              }));
+              setCompletionBanner(
+                `Verified & signed in as ${u.displayName} (@${idents[0]?.username || u.displayName}) via GitHub!`
+              );
+              window.setTimeout(() => setCompletionBanner(null), 4200);
+              setIsAvatarModalOpen(false);
+              setAuthModalNotice(null);
+              return;
+            }
+            if (providerUserId && username) {
+              const internalUserId = `usr_github_${providerUserId}`;
+              const newIdentId = `id_github_${providerUserId}`;
+              const newIdent: SocialIdentity = {
+                id: newIdentId,
+                userId: internalUserId,
+                provider: 'github',
+                providerUserId,
+                username,
+                displayName: displayName || username,
+                avatarUrl: avatarUrl || null,
+                profileUrl: profileUrl || `https://github.com/${username}`,
+                isPublic: true,
+              };
+              setProfile((prev) => ({
+                ...prev,
+                userId: internalUserId,
+                isAuthenticated: true,
+                displayName: displayName || username,
+                preferredIdentityId: newIdentId,
+                preferredAvatarIdentityId: newIdentId,
+                identities: [newIdent],
+              }));
+              setCompletionBanner(
+                `Verified & signed in as ${displayName || username} (@${username}) via GitHub!`
+              );
+              window.setTimeout(() => setCompletionBanner(null), 4200);
+              setIsAvatarModalOpen(false);
+              setAuthModalNotice(null);
+            }
+          }}
           onDisconnectIdentity={handleDisconnectIdentity}
           onSignOut={handleSignOut}
           onClose={() => {

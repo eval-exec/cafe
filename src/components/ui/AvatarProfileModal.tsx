@@ -1,13 +1,16 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Check,
+  Copy,
   Eye,
   EyeOff,
   ExternalLink,
+  KeyRound,
   Link2,
   LogOut,
   ShieldCheck,
   Sparkles,
+  Terminal,
   Unlink,
   User,
   X,
@@ -21,7 +24,15 @@ import {
   UserProfile,
 } from '../../types';
 import { ProviderIcon } from './VisitorProfileCardModal';
-import { validateSafeAvatarUrl } from '../../network/multiplayerClient';
+import {
+  AuthSessionResponse,
+  GithubDeviceFlowStartResponse,
+  pollGithubDeviceFlow,
+  startGithubDeviceFlow,
+  validateSafeAvatarUrl,
+  verifyGithubCliSession,
+  verifyGithubPersonalAccessToken,
+} from '../../network/multiplayerClient';
 
 interface AvatarProfileModalProps {
   profile: UserProfile;
@@ -33,6 +44,16 @@ interface AvatarProfileModalProps {
     usernameHint?: string,
     displayNameHint?: string
   ) => Promise<void>;
+  onApplyVerifiedGithubSession: (
+    sessionOrProfile: {
+      session?: AuthSessionResponse;
+      providerUserId?: string;
+      username?: string;
+      displayName?: string;
+      avatarUrl?: string | null;
+      profileUrl?: string;
+    }
+  ) => void;
   onDisconnectIdentity: (identityId: string) => Promise<void>;
   onSignOut: () => Promise<void>;
   onClose: () => void;
@@ -95,6 +116,7 @@ export const AvatarProfileModal: React.FC<AvatarProfileModalProps> = ({
   authNotice,
   onUpdateProfile,
   onStartOAuth,
+  onApplyVerifiedGithubSession,
   onDisconnectIdentity,
   onSignOut,
   onClose,
@@ -106,8 +128,102 @@ export const AvatarProfileModal: React.FC<AvatarProfileModalProps> = ({
   const [oauthStepMode, setOauthStepMode] = useState<'login' | 'link'>('login');
   const [usernameInput, setUsernameInput] = useState('eval-exec');
   const [displayNameInput, setDisplayNameInput] = useState('Eval Exec');
+  const [patInput, setPatInput] = useState('');
+  const [showPatForm, setShowPatForm] = useState(false);
+  const [deviceFlow, setDeviceFlow] = useState<GithubDeviceFlowStartResponse | null>(null);
+  const [copiedDeviceCode, setCopiedDeviceCode] = useState(false);
   const [isSubmittingAuth, setIsSubmittingAuth] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
+
+  // Poll GitHub OAuth Device Flow while active
+  useEffect(() => {
+    if (!deviceFlow) return;
+    const pollMs = Math.max(5, deviceFlow.interval || 5) * 1000;
+    const timer = window.setInterval(async () => {
+      try {
+        const res = await pollGithubDeviceFlow(deviceFlow.deviceCode);
+        if (res.status === 'authenticated' && res.session) {
+          window.clearInterval(timer);
+          setDeviceFlow(null);
+          onApplyVerifiedGithubSession({ session: res.session });
+        } else if (res.status === 'error') {
+          window.clearInterval(timer);
+          setDeviceFlow(null);
+          setLocalError(`GitHub Device Flow error: ${res.error}`);
+        }
+      } catch {
+        // continue polling on transient network error
+      }
+    }, pollMs);
+
+    return () => window.clearInterval(timer);
+  }, [deviceFlow, onApplyVerifiedGithubSession]);
+
+  const handleStartDeviceOAuth = async () => {
+    setLocalError(null);
+    setIsSubmittingAuth(true);
+    try {
+      const started = await startGithubDeviceFlow();
+      setDeviceFlow(started);
+      navigator.clipboard?.writeText(started.userCode).catch(() => {});
+      setCopiedDeviceCode(true);
+    } catch (err) {
+      setLocalError(
+        err instanceof Error
+          ? err.message
+          : 'Could not start GitHub Device Flow.'
+      );
+    } finally {
+      setIsSubmittingAuth(false);
+    }
+  };
+
+  const handleVerifyLocalGhCli = async () => {
+    setLocalError(null);
+    setIsSubmittingAuth(true);
+    try {
+      const sess = await verifyGithubCliSession();
+      onApplyVerifiedGithubSession({ session: sess });
+    } catch (err) {
+      setLocalError(
+        err instanceof Error
+          ? err.message
+          : 'Local GitHub CLI (gh) verification failed.'
+      );
+    } finally {
+      setIsSubmittingAuth(false);
+    }
+  };
+
+  const handleVerifyPat = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLocalError(null);
+    setIsSubmittingAuth(true);
+    try {
+      const verified = await verifyGithubPersonalAccessToken(patInput);
+      if (verified.serverSession) {
+        onApplyVerifiedGithubSession({ session: verified.serverSession });
+      } else {
+        onApplyVerifiedGithubSession({
+          providerUserId: verified.providerUserId,
+          username: verified.username,
+          displayName: verified.displayName,
+          avatarUrl: verified.avatarUrl,
+          profileUrl: verified.profileUrl,
+        });
+      }
+      setPatInput('');
+      setShowPatForm(false);
+    } catch (err) {
+      setLocalError(
+        err instanceof Error
+          ? err.message
+          : 'Invalid GitHub token. Ensure it is a valid ghp_ / github_pat_ token.'
+      );
+    } finally {
+      setIsSubmittingAuth(false);
+    }
+  };
 
   const updateAvatar = (patch: Partial<typeof profile.avatar>) => {
     onUpdateProfile({
@@ -341,8 +457,109 @@ export const AvatarProfileModal: React.FC<AvatarProfileModalProps> = ({
                   </button>
                 </div>
               </form>
+            ) : deviceFlow ? (
+              /* Active GitHub OAuth 2.0 Device Flow Screen (github.com/login/device) */
+              <div className="p-4 rounded-2xl bg-black/45 border border-emerald-400/45 space-y-3.5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="w-7 h-7 rounded-lg bg-emerald-500/20 border border-emerald-400/40 flex items-center justify-center text-emerald-300">
+                      <ProviderIcon provider="github" className="w-4 h-4" />
+                    </span>
+                    <div>
+                      <h3 className="text-xs font-bold uppercase tracking-wider text-emerald-300">
+                        Verify on GitHub.com (Device Flow)
+                      </h3>
+                      <p className="text-[11px] text-amber-200/70">
+                        Waiting for you to authorize on github.com/login/device...
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setDeviceFlow(null)}
+                    className="text-xs text-amber-200/60 hover:text-amber-100"
+                  >
+                    Cancel
+                  </button>
+                </div>
+
+                <div className="p-3.5 rounded-2xl bg-black/60 border border-amber-300/35 text-center space-y-2">
+                  <div className="text-[10px] uppercase tracking-widest text-amber-200/65">
+                    Your One-Time GitHub Verification Code
+                  </div>
+                  <div className="font-mono text-2xl font-bold tracking-widest text-amber-300 select-all">
+                    {deviceFlow.userCode}
+                  </div>
+                  <div className="flex items-center justify-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard?.writeText(deviceFlow.userCode).catch(() => {});
+                        setCopiedDeviceCode(true);
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/15 border border-amber-200/25 text-xs text-amber-100 font-medium"
+                    >
+                      <Copy className="w-3.5 h-3.5 text-amber-300" />
+                      {copiedDeviceCode ? 'Copied Code!' : 'Copy Code'}
+                    </button>
+                    <a
+                      href={deviceFlow.verificationUri}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-stone-950 text-xs font-bold shadow"
+                    >
+                      Open github.com/login/device
+                      <ExternalLink className="w-3.5 h-3.5" />
+                    </a>
+                  </div>
+                </div>
+
+                <p className="text-[11px] text-amber-200/70 text-center">
+                  Paste the code at <strong>github.com/login/device</strong> and click Authorize. This window will sign you in automatically.
+                </p>
+              </div>
+            ) : showPatForm ? (
+              /* Octokit Personal Access Token Verification Form */
+              <form
+                onSubmit={handleVerifyPat}
+                className="p-4 rounded-2xl bg-black/45 border border-amber-400/35 space-y-3"
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <KeyRound className="w-4 h-4 text-amber-300" />
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-amber-200">
+                      Verify with GitHub Token (@octokit/request)
+                    </h3>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowPatForm(false)}
+                    className="text-xs text-amber-200/60 hover:text-amber-100"
+                  >
+                    Cancel
+                  </button>
+                </div>
+                <input
+                  type="password"
+                  value={patInput}
+                  onChange={(e) => setPatInput(e.target.value)}
+                  placeholder="ghp_... or github_pat_..."
+                  required
+                  className="w-full px-3.5 py-2 rounded-xl bg-black/50 border border-amber-300/30 text-sm text-amber-50 focus:outline-none focus:border-amber-400"
+                />
+                <p className="text-[11px] text-amber-200/65">
+                  Verified directly against <code>GET https://api.github.com/user</code> via Octokit with zero write scopes required.
+                </p>
+                <button
+                  type="submit"
+                  disabled={isSubmittingAuth}
+                  className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 text-stone-950 font-semibold text-xs shadow-lg disabled:opacity-50"
+                >
+                  {isSubmittingAuth ? 'Verifying with GitHub API...' : 'Verify Token & Sign In'}
+                </button>
+              </form>
             ) : !profile.isAuthenticated ? (
-              /* Unauthenticated Primary Sign-In Button */
+              /* Unauthenticated Primary Sign-In Buttons */
               <div className="space-y-3">
                 <div className="p-4 rounded-2xl bg-black/30 border border-amber-200/15 space-y-3">
                   <p className="text-xs text-amber-100/90 leading-relaxed">
@@ -353,15 +570,51 @@ export const AvatarProfileModal: React.FC<AvatarProfileModalProps> = ({
                     and connect with other visitors.
                   </p>
 
-                  <div className="pt-1">
+                  <div className="space-y-2 pt-1">
+                    {/* 1. Official GitHub OAuth Device Flow (github.com/login/device — No Client Secret Required) */}
                     <button
                       type="button"
-                      onClick={() => handleOpenProviderOAuth('github', 'login')}
-                      className="w-full flex items-center justify-center gap-2.5 py-3 px-4 rounded-2xl bg-[#181717] hover:bg-[#242323] border border-amber-300/35 text-white font-semibold text-xs shadow-lg transition-all"
+                      disabled={isSubmittingAuth}
+                      onClick={handleStartDeviceOAuth}
+                      className="w-full flex items-center justify-center gap-2.5 py-3 px-4 rounded-2xl bg-[#181717] hover:bg-[#242323] border border-emerald-400/45 text-white font-semibold text-xs shadow-lg transition-all disabled:opacity-50"
                     >
-                      <ProviderIcon provider="github" className="w-4 h-4" />
-                      Continue with GitHub
+                      <ProviderIcon provider="github" className="w-4 h-4 text-emerald-300" />
+                      <span>Continue with GitHub (Verify on github.com/login/device)</span>
                     </button>
+
+                    {/* 2. 1-Click Local GitHub CLI (gh auth token) */}
+                    <button
+                      type="button"
+                      disabled={isSubmittingAuth}
+                      onClick={handleVerifyLocalGhCli}
+                      className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-2xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-400/40 text-amber-100 font-semibold text-xs transition-all disabled:opacity-50"
+                    >
+                      <Terminal className="w-3.5 h-3.5 text-amber-300" />
+                      <span>1-Click Sign In via Local GitHub CLI (gh @eval-exec)</span>
+                    </button>
+
+                    {/* 3. Octokit Public Handle or Token */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => handleOpenProviderOAuth('github', 'login')}
+                        className="flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-white/5 hover:bg-white/10 border border-amber-200/20 text-[11px] font-medium text-amber-100 transition-all"
+                      >
+                        <ProviderIcon provider="github" className="w-3.5 h-3.5" />
+                        <span>Octokit GitHub Handle</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setLocalError(null);
+                          setShowPatForm(true);
+                        }}
+                        className="flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-white/5 hover:bg-white/10 border border-amber-200/20 text-[11px] font-medium text-amber-100 transition-all"
+                      >
+                        <KeyRound className="w-3.5 h-3.5 text-amber-300" />
+                        <span>Verify with GitHub Token</span>
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
